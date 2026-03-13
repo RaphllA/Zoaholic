@@ -266,6 +266,34 @@ async def get_vertex_gemini_payload(request, engine, provider, api_key=None):
                 elif item.type == "image_url" and provider.get("image", True):
                     image_message = await format_gemini_image_message(item.image_url.url)
                     content.append(image_message)
+                elif item.type == "file":
+                    if getattr(item.file, "file_uri", None):
+                        content.append({
+                            "fileData": {
+                                "mimeType": item.file.mime_type or "application/octet-stream",
+                                "fileUri": item.file.file_uri
+                            }
+                        })
+                    elif getattr(item.file, "url", None):
+                        from ..file_utils import get_base64_file, parse_data_uri
+                        data_uri, mime_type = await get_base64_file(item.file.url)
+                        if data_uri.startswith("data:"):
+                            _, b64_data = parse_data_uri(data_uri)
+                        else:
+                            b64_data = data_uri
+                        content.append({
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": b64_data
+                            }
+                        })
+                    elif getattr(item.file, "data", None):
+                        content.append({
+                            "inlineData": {
+                                "mimeType": item.file.mime_type or "application/octet-stream",
+                                "data": item.file.data
+                            }
+                        })
         elif msg.content:
             content = [{"text": msg.content}]
         elif msg.content is None:
@@ -553,6 +581,27 @@ async def get_vertex_claude_payload(request, engine, provider, api_key=None):
                 elif item.type == "image_url" and provider.get("image", True):
                     image_message = await format_claude_image_message(item.image_url.url)
                     content.append(image_message)
+                elif item.type == "file":
+                    b64_data = ""
+                    mime_type = item.file.mime_type or "application/octet-stream"
+                    if getattr(item.file, "data", None):
+                        b64_data = item.file.data
+                    elif getattr(item.file, "url", None):
+                        from ..file_utils import get_base64_file, parse_data_uri
+                        data_uri, mime_type = await get_base64_file(item.file.url)
+                        if data_uri.startswith("data:"):
+                            _, b64_data = parse_data_uri(data_uri)
+                        else:
+                            b64_data = data_uri
+                    if b64_data:
+                        content.append({
+                            "type": "document" if not mime_type.startswith("image/") else "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": b64_data,
+                            }
+                        })
         else:
             content = msg.content
             tool_calls = msg.tool_calls

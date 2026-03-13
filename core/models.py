@@ -44,10 +44,21 @@ class ToolCall(BaseModel):
 class ImageUrl(BaseModel):
     url: str
 
+class FileRef(BaseModel):
+    mime_type: Optional[str] = None
+    filename: Optional[str] = None
+    data: Optional[str] = None
+    url: Optional[str] = None
+    file_id: Optional[str] = None
+    file_uri: Optional[str] = None
+    
+    model_config = ConfigDict(extra='allow')
+
 class ContentItem(BaseModel):
     type: str
     text: Optional[str] = None
     image_url: Optional[ImageUrl] = None
+    file: Optional[FileRef] = None
     
     model_config = ConfigDict(extra='allow')
 

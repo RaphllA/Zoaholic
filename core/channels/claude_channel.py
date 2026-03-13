@@ -179,6 +179,27 @@ async def get_claude_payload(request, engine, provider, api_key=None):
                 elif item.type == "image_url" and provider.get("image", True):
                     image_message = await format_image_message(item.image_url.url)
                     content.append(image_message)
+                elif item.type == "file":
+                    b64_data = ""
+                    mime_type = item.file.mime_type or "application/octet-stream"
+                    if getattr(item.file, "data", None):
+                        b64_data = item.file.data
+                    elif getattr(item.file, "url", None):
+                        from ..file_utils import get_base64_file, parse_data_uri
+                        data_uri, mime_type = await get_base64_file(item.file.url)
+                        if data_uri.startswith("data:"):
+                            _, b64_data = parse_data_uri(data_uri)
+                        else:
+                            b64_data = data_uri
+                    if b64_data:
+                        content.append({
+                            "type": "document" if not mime_type.startswith("image/") else "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": b64_data,
+                            }
+                        })
         else:
             content = msg.content
             tool_calls = msg.tool_calls

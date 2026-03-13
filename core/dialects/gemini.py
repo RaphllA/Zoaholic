@@ -169,8 +169,18 @@ async def parse_gemini_request(
                 data = inline.get("data", "")
                 content_items.append(
                     ContentItem(
-                        type="image_url",
-                        image_url={"url": f"data:{mime_type};base64,{data}"},
+                        type="file",
+                        file={"mime_type": mime_type, "data": data},
+                    )
+                )
+            elif "fileData" in part and isinstance(part.get("fileData"), dict):
+                file_data = part["fileData"]
+                mime_type = file_data.get("mimeType", "application/octet-stream")
+                file_uri = file_data.get("fileUri", "")
+                content_items.append(
+                    ContentItem(
+                        type="file",
+                        file={"mime_type": mime_type, "file_uri": file_uri},
                     )
                 )
 

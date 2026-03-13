@@ -187,6 +187,48 @@ async def get_gpt_payload(request, engine, provider, api_key=None):
                             "image_url": image_message["image_url"]["url"]
                         }
                     content.append(image_message)
+                elif item.type == "file":
+                    # 处理 OpenAI Responses 模式下的文件
+                    if "v1/responses" in url:
+                        if getattr(item.file, "url", None) and item.file.url.startswith("data:image/"):
+                            content.append({"type": "input_image", "image_url": item.file.url})
+                        elif getattr(item.file, "data", None) and str(item.file.mime_type).startswith("image/"):
+                            content.append({"type": "input_image", "image_url": f"data:{item.file.mime_type};base64,{item.file.data}"})
+                        else:
+                            file_item = {"type": "input_file"}
+                            if getattr(item.file, "filename", None):
+                                file_item["filename"] = item.file.filename
+                            if getattr(item.file, "file_id", None):
+                                file_item["file_id"] = item.file.file_id
+                            elif getattr(item.file, "url", None):
+                                if item.file.url.startswith("http"):
+                                    file_item["file_url"] = item.file.url
+                                else:
+                                    file_item["file_data"] = item.file.url
+                            elif getattr(item.file, "data", None):
+                                file_item["file_data"] = f"data:{item.file.mime_type or 'application/octet-stream'};base64,{item.file.data}"
+                            content.append(file_item)
+                    # 处理标准 Chat 模式下的文件
+                    else:
+                        is_image = False
+                        if item.file is None:
+                            continue
+                        if getattr(item.file, "mime_type", None) and item.file.mime_type.startswith("image/"):
+                            is_image = True
+                        elif getattr(item.file, "url", None) and item.file.url.startswith("data:image/"):
+                            is_image = True
+                        
+                        if is_image and provider.get("image", True) and "o1-mini" not in original_model:
+                            if getattr(item.file, "data", None):
+                                b64 = f"data:{item.file.mime_type};base64,{item.file.data}"
+                                content.append(await format_image_message(b64))
+                            elif getattr(item.file, "url", None):
+                                content.append(await format_image_message(item.file.url))
+                            else:
+                                pass
+                        else:
+                            from fastapi import HTTPException
+                            raise HTTPException(status_code=400, detail="当前渠道仅支持图片输入，不支持非图片文件。如需传输文档，请使用其他支持该能力的渠道。")
         else:
             content = msg.content
             if msg.role == "system" and "o3-mini" in original_model and not content.startswith("Formatting re-enabled"):
@@ -487,10 +529,16 @@ async def fetch_gpt_response_stream(client, url, headers, payload, model, timeou
                     openrouter_reasoning = safe_get(line, "choices", 0, "delta", "reasoning", default="")
                     openrouter_base64_image = safe_get(line, "choices", 0, "delta", "images", 0, "image_url", "url", default="")
                     if openrouter_base64_image:
-                        image_url = await upload_image_to_0x0st(openrouter_base64_image)
-                        sse_string = await generate_sse_response(timestamp, payload["model"], content=f"\n\n![image]({image_url})")
-                        yield sse_string
+                        image_data_uri = openrouter_base64_image if openrouter_base64_image.startswith("data:image/") else f"data:image/png;base64,{openrouter_base64_image}"
+                        full_image_md = f"\n\n![image]({image_data_uri})"
+                        chunk_size = 16384
+                        for i in range(0, len(full_image_md), chunk_size):
+                            sse_string = await generate_sse_response(timestamp, payload["model"], content=full_image_md[i:i+chunk_size])
+                            yield sse_string
+                            await asyncio.sleep(0.001)
                         continue
+
+
                     azure_databricks_claude_summary_content = safe_get(line, "choices", 0, "delta", "content", 0, "summary", 0, "text", default="")
                     azure_databricks_claude_signature_content = safe_get(line, "choices", 0, "delta", "content", 0, "summary", 0, "signature", default="")
                     if azure_databricks_claude_signature_content:

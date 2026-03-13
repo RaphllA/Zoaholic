@@ -937,8 +937,9 @@ async def generate_no_stream_response(timestamp, model, content=None, tools_id=N
 
 def get_image_format(file_content: bytes):
     try:
-        img = Image.open(io.BytesIO(file_content))
-        return img.format.lower()
+        with Image.open(io.BytesIO(file_content)) as img:
+            img_format = (img.format or "").lower()
+        return img_format or None
     except Exception:
         return None
 
@@ -979,8 +980,52 @@ async def get_image_from_url(url):
 
 async def get_encode_image(image_url):
     file_content = await get_image_from_url(image_url)
-    base64_image = encode_image(file_content)
+    base64_image = await asyncio.to_thread(encode_image, file_content)
     return base64_image
+
+
+def _convert_webp_base64_to_png(base64_image: str) -> tuple[str, str]:
+    image_data = base64.b64decode(base64_image.split(",")[1])
+    with Image.open(io.BytesIO(image_data)) as image:
+        png_buffer = io.BytesIO()
+        image.save(png_buffer, format="PNG")
+    png_base64 = base64.b64encode(png_buffer.getvalue()).decode('utf-8')
+    return f"data:image/png;base64,{png_base64}", "image/png"
+
+
+def _prepare_image_for_upload(base64_image: str, max_size_mb: float) -> dict:
+    if "," in base64_image:
+        base64_data = base64_image.split(",")[1]
+    else:
+        base64_data = base64_image
+
+    image_size_bytes = len(base64_data) * 3 // 4
+    image_size_mb = image_size_bytes / (1024 * 1024)
+    result = {
+        "base64_data": base64_data,
+        "original_size_mb": image_size_mb,
+        "compressed": False,
+        "compressed_size_mb": image_size_mb,
+        "size": None,
+    }
+
+    if image_size_mb <= max_size_mb:
+        return result
+
+    image_bytes = base64.b64decode(base64_data)
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        scale = (max_size_mb / image_size_mb) ** 0.5
+        new_width = max(1, int(img.width * scale))
+        new_height = max(1, int(img.height * scale))
+        resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        if resized.mode in ('RGBA', 'LA', 'P'):
+            resized = resized.convert('RGB')
+        resized.save(output, format='JPEG', quality=85, optimize=True)
+    compressed_base64 = base64.b64encode(output.getvalue()).decode('utf-8')
+    compressed_size_mb = len(compressed_base64) * 3 // 4 / (1024 * 1024)
+    result.update({"base64_data": compressed_base64, "compressed": True, "compressed_size_mb": compressed_size_mb, "size": (new_width, new_height)})
+    return result
 
 # from PIL import Image
 # import io
@@ -1013,24 +1058,15 @@ async def get_base64_image(image_url: str) -> tuple[str, str]:
         tuple: (base64_image_with_prefix, mime_type)
                例如: ("data:image/png;base64,xxx", "image/png")
     """
-    if image_url.startswith("http"):
-        base64_image = await get_encode_image(image_url)
-    else:
-        base64_image = image_url
-        
-    colon_index = base64_image.index(":")
-    semicolon_index = base64_image.index(";")
-    image_type = base64_image[colon_index + 1:semicolon_index]
+    from .file_utils import get_base64_file
+    base64_image, image_type = await get_base64_file(image_url)
+
+    if not image_type.startswith("image/"):
+        raise ValueError(f"Expected an image MIME type, but got: {image_type}")
 
     # 将 webp 转换为 png（某些 API 不支持 webp）
     if image_type == "image/webp":
-        image_data = base64.b64decode(base64_image.split(",")[1])
-        image = Image.open(io.BytesIO(image_data))
-        png_buffer = io.BytesIO()
-        image.save(png_buffer, format="PNG")
-        png_base64 = base64.b64encode(png_buffer.getvalue()).decode('utf-8')
-        base64_image = f"data:image/png;base64,{png_base64}"
-        image_type = "image/png"
+        base64_image, image_type = await asyncio.to_thread(_convert_webp_base64_to_png, base64_image)
 
     return base64_image, image_type
 
@@ -1060,98 +1096,17 @@ def parse_json_safely(json_str):
 
 async def upload_image_to_0x0st(base64_image: str, max_size_mb: float = 10.0):
     """
-    Uploads a base64 encoded image to freeimage.host.
-    
-    Uses freeimage.host public guest API (no API key registration required).
-    API docs: https://freeimage.host/page/api
+    图床上传链路已暂时关闭。
 
-    Args:
-        base64_image: The base64 encoded image string.
-        max_size_mb: Maximum image size in MB. Larger images will be compressed.
-
-    Returns:
-        The URL of the uploaded image, or None if upload fails.
+    当前统一返回 None，让上层稳定走 inline base64 回退路径。
+    保留此函数签名，便于后续按需恢复或切换其他上传方案。
     """
-    # 提取纯 base64 数据（去除 data URI 前缀，如 "data:image/png;base64,"）
-    if "," in base64_image:
-        base64_data = base64_image.split(",")[1]
-    else:
-        base64_data = base64_image
-
-    # 检查图片大小
-    image_size_bytes = len(base64_data) * 3 // 4  # base64 编码后大约增加 33%
-    image_size_mb = image_size_bytes / (1024 * 1024)
-    
-    logger.info(f"[upload_image] Original size: {image_size_mb:.2f} MB")
-    
-    # 如果图片太大，尝试压缩
-    if image_size_mb > max_size_mb:
-        try:
-            logger.info(f"[upload_image] Image too large ({image_size_mb:.2f} MB), compressing...")
-            image_bytes = base64.b64decode(base64_data)
-            img = Image.open(io.BytesIO(image_bytes))
-            
-            # 计算缩放比例
-            scale = (max_size_mb / image_size_mb) ** 0.5
-            new_width = int(img.width * scale)
-            new_height = int(img.height * scale)
-            
-            # 缩放图片
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # 转换为 JPEG 格式以减小体积
-            output = io.BytesIO()
-            if img.mode in ('RGBA', 'LA', 'P'):
-                # 有透明通道的转为 RGB
-                img = img.convert('RGB')
-            img.save(output, format='JPEG', quality=85, optimize=True)
-            base64_data = base64.b64encode(output.getvalue()).decode('utf-8')
-            
-            new_size_mb = len(base64_data) * 3 // 4 / (1024 * 1024)
-            logger.info(f"[upload_image] Compressed to {new_size_mb:.2f} MB, new size: {new_width}x{new_height}")
-        except Exception as e:
-            logger.error(f"[upload_image] Compression failed: {e}")
-            # 压缩失败，继续尝试上传原图
-
-    # freeimage.host 公共 guest API key
-    FREEIMAGE_API_KEY = "6d207e02198a847aa98d0a2a901485a5"
-    
-    # 增加超时时间，大文件需要更长时间
-    timeout = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
-    
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            # freeimage.host API: POST https://freeimage.host/api/1/upload
-            # 参数: key (API key), source (base64 或文件), format (json/redirect/txt)
-            logger.info(f"[upload_image] Uploading to freeimage.host...")
-            response = await client.post(
-                "https://freeimage.host/api/1/upload",
-                data={
-                    'key': FREEIMAGE_API_KEY,
-                    'source': base64_data,
-                    'format': 'json',
-                },
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get('success') or result.get('status_code') == 200:
-                # 返回直接图片链接
-                url = result.get('image', {}).get('url')
-                if url:
-                    logger.info(f"[upload_image] Upload successful: {url}")
-                    return url
-            logger.error(f"[upload_image] freeimage.host 上传失败: {result}")
-        except httpx.TimeoutException as e:
-            logger.error(f"[upload_image] 上传超时: {e}")
-        except httpx.RequestError as e:
-            logger.error(f"[upload_image] 请求 freeimage.host 时出错: {e}")
-        except httpx.HTTPStatusError as e:
-            logger.error(f"[upload_image] 上传图片到 freeimage.host 时发生 HTTP 错误: {e.response.status_code}, {e.response.text[:500]}")
-        except Exception as e:
-            logger.error(f"[upload_image] freeimage.host 上传异常: {e}")
-    
-    # 上传失败，返回 None（而不是原始 base64，避免返回超大响应）
+    _ = base64_image
+    _ = max_size_mb
+    logger.info("[upload_image] External image upload is disabled. Use inline base64 instead.")
     return None
+
+
 
 if __name__ == "__main__":
     provider = {

@@ -84,9 +84,30 @@ def convert_responses_input_to_messages(input_data: Union[str, List[Dict[str, An
                                         "type": "image_url",
                                         "image_url": {"url": image_url}
                                     })
-                            # input_audio -> 暂不支持，跳过
+                            # input_audio -> file
                             elif item_type == "input_audio":
-                                pass
+                                data = content_item.get("input_audio", {}).get("data", "")
+                                if data:
+                                    converted_content.append({
+                                        "type": "file",
+                                        "file": {"mime_type": "audio/wav", "data": data}
+                                    })
+                            # input_file -> file
+                            elif item_type == "input_file":
+                                file_obj = {}
+                                for field in ["file_id", "filename", "file_url", "file_data"]:
+                                    val = content_item.get(field)
+                                    if val is not None:
+                                        if field == "file_url" or (field == "file_data" and str(val).startswith("data:")):
+                                            file_obj["url"] = val
+                                        elif field == "file_data":
+                                            file_obj["data"] = val
+                                        else:
+                                            file_obj[field] = val
+                                converted_content.append({
+                                    "type": "file",
+                                    "file": file_obj
+                                })
                             # 其他类型原样传递
                             else:
                                 # 尝试保留原有格式（如 text, image_url）

@@ -4,7 +4,8 @@ import { apiFetch } from '../lib/api';
 import {
   Send, Settings2, Trash2, RefreshCw, Copy, ChevronDown, ChevronRight,
   Brain, MessageSquare, Zap, MoreVertical, Edit3, CheckCheck, Loader2,
-  Terminal, Sparkles, Blocks, Thermometer, X, Key, CheckCircle2, AlertCircle, SlidersHorizontal
+  Terminal, Sparkles, Blocks, Thermometer, X, Key, CheckCircle2, AlertCircle, SlidersHorizontal,
+  Paperclip
 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -13,7 +14,7 @@ import * as Switch from '@radix-ui/react-switch';
 // ========== Types ==========
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
-  content: string;
+  content: string | any[];
   reasoning_content?: string;
   isTyping?: boolean;
 }
@@ -31,6 +32,12 @@ export default function Playground() {
   const [selectedModel, setSelectedModel] = useState('');
   const [loadingModels, setLoadingModels] = useState(false);
 
+  const [attachments, setAttachments] = useState<Array<{
+    id: string;
+    type: 'image' | 'file';
+    url: string;
+    file: File;
+  }>>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
@@ -52,6 +59,7 @@ export default function Playground() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getExternalLink = (template: string) => {
     const address = window.location.origin;
@@ -120,9 +128,47 @@ export default function Playground() {
     setIsGenerating(true);
     const msgList = [...newMessages];
 
-    const requestMessages = systemPrompt
-      ? [{ role: 'system', content: systemPrompt }, ...msgList]
-      : msgList;
+    const requestMessages = [];
+    if (systemPrompt) {
+      requestMessages.push({ role: 'system', content: systemPrompt });
+    }
+    
+    // 如果当前有附件，把它们添加到最新的用户消息中
+    if (attachments.length > 0 && msgList.length > 0) {
+      let lastUserIndex = -1;
+      for (let i = msgList.length - 1; i >= 0; i--) {
+        if (msgList[i].role === 'user') {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      
+      if (lastUserIndex !== -1) {
+        const lastUserMsg = msgList[lastUserIndex];
+        const contentArr: any[] = typeof lastUserMsg.content === 'string' 
+          ? [{ type: 'text', text: lastUserMsg.content }]
+          : [...lastUserMsg.content];
+          
+        attachments.forEach(att => {
+          if (att.type === 'image') {
+            contentArr.push({ type: 'image_url', image_url: { url: att.url } });
+          } else if (att.type === 'file') {
+            contentArr.push({
+              type: 'file', 
+              file: {
+                mime_type: att.file.type || 'application/octet-stream',
+                filename: att.file.name,
+                data: att.url.split(',')[1],
+                url: att.url
+              }
+            });
+          }
+        });
+        msgList[lastUserIndex] = { ...lastUserMsg, content: contentArr };
+      }
+    }
+    
+    requestMessages.push(...msgList);
 
     const appendSystemError = (text: string) => {
       const msg = (text || '未知错误').toString();
@@ -285,11 +331,12 @@ export default function Playground() {
   };
 
   const handleSend = () => {
-    if (!inputValue.trim() || isGenerating) return;
-    const userMsg: ChatMessage = { role: 'user', content: inputValue.trim() };
+    if ((!inputValue.trim() && attachments.length === 0) || isGenerating) return;
+    const userMsg: ChatMessage = { role: 'user', content: inputValue.trim() || ' ' };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInputValue('');
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
     sendMessage(newMessages);
   };
@@ -320,6 +367,10 @@ export default function Playground() {
 
   const startEditing = (index: number, content: string) => {
     setEditingIndex(index);
+    // 如果是结构化消息，尝试提取其中的文本内容进行编辑，而不是编辑 JSON 字符串
+    if (typeof messages[index].content !== 'string') {
+      content = (messages[index].content as any[]).find(it => it.type === 'text')?.text || '';
+    }
     setEditValue(content);
   };
 
@@ -327,6 +378,17 @@ export default function Playground() {
     if (!editValue.trim()) return;
     if (editValue !== messages[index].content) {
       const newMessages = messages.slice(0, index + 1);
+      // 如果原消息是结构化的，编辑后我们目前保守地将其转回纯文本，或可以后续考虑保留原附件
+      if (typeof newMessages[index].content !== 'string') {
+        const originalAttachments = (newMessages[index].content as any[]).filter(it => it.type !== 'text');
+        if (originalAttachments.length > 0) {
+          newMessages[index].content = [{ type: 'text', text: editValue }, ...originalAttachments];
+        } else {
+          newMessages[index].content = editValue;
+        }
+      } else {
+        newMessages[index].content = editValue;
+      }
       newMessages[index].content = editValue;
       setMessages(newMessages);
       if (newMessages[index].role === 'user') {
@@ -344,6 +406,35 @@ export default function Playground() {
     if (confirm('确定清空所有对话历史吗？')) {
       setMessages([]);
     }
+  };
+  
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Reset input so the same file can be selected again if needed
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const base64 = e.target?.result as string;
+      if (file.type.startsWith('image/')) {
+        setAttachments(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'image',
+          url: base64,
+          file
+        }]);
+      } else {
+        setAttachments(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'file',
+          url: base64,
+          file
+        }]);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   // Render External Client Iframe
@@ -477,7 +568,34 @@ export default function Playground() {
                     </div>
                   ) : (
                     <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                      {msg.content}
+                      {typeof msg.content === 'string' ? msg.content : (
+                        <div className="flex flex-col gap-2">
+                          {msg.content.map((item, i) => {
+                            if (item.type === 'text') return <span key={i}>{item.text}</span>;
+                            if (item.type === 'image_url') return <img key={i} src={item.image_url?.url} alt="Attachment" className="max-w-xs rounded-lg" />;
+                            if (item.type === 'file') {
+                              if (item.file?.mime_type?.startsWith('image/')) {
+                                return <img key={i} src={item.file?.url || `data:${item.file.mime_type};base64,${item.file.data}`} alt="Attachment" className="max-w-xs rounded-lg" />;
+                              }
+                              return (
+                                <div key={i} className="flex items-center gap-2 p-2 bg-background/50 border border-border rounded w-fit">
+                                  <div className="bg-blue-100 dark:bg-blue-900/30 p-1.5 rounded text-blue-600 dark:text-blue-400">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+                                      <polyline points="14 2 14 8 20 8"/>
+                                    </svg>
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-xs font-medium">{item.file?.filename || 'Attachment'}</span>
+                                    <span className="text-[10px] text-muted-foreground">{item.file?.mime_type}</span>
+                                  </div>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })}
+                        </div>
+                      )}
                       {msg.isTyping && <span className="inline-block w-2 h-4 bg-muted-foreground ml-1 animate-pulse align-middle" />}
                     </div>
                   )}
@@ -485,10 +603,10 @@ export default function Playground() {
 
                 {editingIndex !== idx && !msg.isTyping && (
                   <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => copyMessage(idx, msg.content)} className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors" title="复制">
+                    <button onClick={() => copyMessage(idx, typeof msg.content === 'string' ? msg.content : (msg.content as any[]).find(it => it.type === 'text')?.text || '')} className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors" title="复制">
                       {copiedIndex === idx ? <CheckCheck className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
                     </button>
-                    <button onClick={() => startEditing(idx, msg.content)} className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors" title="编辑">
+                    <button onClick={() => startEditing(idx, typeof msg.content === 'string' ? msg.content : '')} className="p-1.5 text-muted-foreground hover:text-foreground rounded-md hover:bg-muted transition-colors" title="编辑">
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
                     <button onClick={() => retryMessage(idx)} className="p-1.5 text-muted-foreground hover:text-blue-500 rounded-md hover:bg-muted transition-colors" title={msg.role === 'user' ? '重发此消息' : '重新生成'}>
@@ -518,7 +636,36 @@ export default function Playground() {
 
         {/* Input Area */}
         <div className="p-4 md:px-10 bg-background/60 backdrop-blur-sm border-t border-border flex-shrink-0">
+          {attachments.length > 0 && (
+            <div className="max-w-4xl mx-auto flex flex-wrap gap-2 mb-2">
+              {attachments.map(att => (
+                <div key={att.id} className="relative group">
+                  {att.type === 'image' && (
+                    <img src={att.url} alt="Attachment" className="h-12 w-12 object-cover rounded border border-border" />
+                  )}
+                  {att.type === 'file' && (
+                    <div className="h-12 w-12 bg-muted flex items-center justify-center rounded border border-border text-[10px] text-muted-foreground overflow-hidden px-1 text-center truncate">
+                      {att.file.name.split('.').pop()?.toUpperCase() || 'FILE'}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))}
+                    className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 hover:bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="max-w-4xl mx-auto relative bg-muted border border-border focus-within:border-primary rounded-xl overflow-hidden transition-colors">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleFileSelect} 
+              accept="*/*"
+              className="hidden"
+            />
             <textarea
               ref={textareaRef}
               value={inputValue}
@@ -530,9 +677,17 @@ export default function Playground() {
               onKeyDown={handleKeyDown}
               placeholder={token ? "输入消息 (Shift + Enter 换行)..." : "请先登录..."}
               disabled={!token || isGenerating}
-              className="w-full bg-transparent text-foreground p-4 pr-12 text-sm max-h-[200px] resize-none focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
+              className="w-full bg-transparent text-foreground p-4 pl-12 pr-12 text-sm max-h-[200px] resize-none focus:outline-none placeholder:text-muted-foreground disabled:opacity-50"
               rows={1}
             />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isGenerating || !token}
+              className="absolute left-3 bottom-3 p-2 text-muted-foreground hover:text-foreground rounded-lg disabled:opacity-50 transition-colors"
+              title="上传附件"
+            >
+              <Paperclip className="w-4 h-4" />
+            </button>
             <button
               onClick={handleSend}
               disabled={!inputValue.trim() || isGenerating || !token}

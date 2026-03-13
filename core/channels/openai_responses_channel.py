@@ -275,6 +275,27 @@ async def get_responses_payload(request, engine, provider, api_key=None):
                 elif getattr(item, "type", None) == "image_url" and provider.get("image", True):
                     image_item = await format_input_image(item.image_url.url)
                     content_items.append(image_item)
+                elif getattr(item, "type", None) == "file":
+                    if getattr(item.file, "url", None) and item.file.url.startswith("data:image/"):
+                        image_item = await format_input_image(item.file.url)
+                        content_items.append(image_item)
+                    elif getattr(item.file, "data", None) and str(item.file.mime_type).startswith("image/"):
+                        image_item = await format_input_image(f"data:{item.file.mime_type};base64,{item.file.data}")
+                        content_items.append(image_item)
+                    else:
+                        file_item = {"type": "input_file"}
+                        if getattr(item.file, "filename", None):
+                            file_item["filename"] = item.file.filename
+                        if getattr(item.file, "file_id", None):
+                            file_item["file_id"] = item.file.file_id
+                        elif getattr(item.file, "url", None):
+                            if item.file.url.startswith("http"):
+                                file_item["file_url"] = item.file.url
+                            else:
+                                file_item["file_data"] = item.file.url
+                        elif getattr(item.file, "data", None):
+                            file_item["file_data"] = f"data:{item.file.mime_type or 'application/octet-stream'};base64,{item.file.data}"
+                        content_items.append(file_item)
             if content_items:
                 input_items.append({"type": "message", "role": role, "content": content_items})
 

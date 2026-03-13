@@ -171,6 +171,34 @@ async def get_gemini_payload(request, engine, provider, api_key=None):
                     parts.append(format_text_message(item.text))
                 elif item.type == "image_url" and provider.get("image", True):
                     parts.append(await format_image_message(item.image_url.url))
+                elif item.type == "file":
+                    if getattr(item.file, "file_uri", None):
+                        parts.append({
+                            "fileData": {
+                                "mimeType": item.file.mime_type or "application/octet-stream",
+                                "fileUri": item.file.file_uri
+                            }
+                        })
+                    elif getattr(item.file, "url", None):
+                        from ..file_utils import get_base64_file, parse_data_uri
+                        data_uri, mime_type = await get_base64_file(item.file.url)
+                        if data_uri.startswith("data:"):
+                            _, b64_data = parse_data_uri(data_uri)
+                        else:
+                            b64_data = data_uri
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": mime_type,
+                                "data": b64_data
+                            }
+                        })
+                    elif getattr(item.file, "data", None):
+                        parts.append({
+                            "inlineData": {
+                                "mimeType": item.file.mime_type or "application/octet-stream",
+                                "data": item.file.data
+                            }
+                        })
         elif msg.content:
             parts.append({"text": msg.content})
 
@@ -179,9 +207,11 @@ async def get_gemini_payload(request, engine, provider, api_key=None):
             for i, tc in enumerate(msg.tool_calls):
                 # 转换 arguments
                 try:
-                    args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                    args = await asyncio.to_thread(json.loads, tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
                 except:
                     args = {}
+
+
                 
                 part = {
                     "functionCall": {
@@ -747,17 +777,10 @@ async def fetch_gemini_response(client, url, headers, payload, model, timeout):
                 from ..log_config import logger
                 logger.info(f"[Gemini] Processing image for non-stream response, model={model}")
                 
-                # 发送 SSE 注释作为 keepalive 并不适用这里，因为是非流式
-                # 上传到图床
-                image_url = await upload_image_to_0x0st("data:image/png;base64," + image_base64, max_size_mb=50.0)
-                
-                if image_url and image_url.startswith("http"):
-                    content = (content or "") + f"\n\n![image]({image_url})"
-                    image_base64 = None # 清除，防止 generate_no_stream_response 返回图像 API 格式
-                else:
-                    # 上传失败，返回 data URI 格式的 base64
-                    content = (content or "") + f"\n\n![image](data:image/png;base64,{image_base64})"
-                    image_base64 = None
+                # 非流式路径也不再走图床，统一直接返回 inline base64
+                content = (content or "") + f"\n\n![image](data:image/png;base64,{image_base64})"
+                image_base64 = None  # 清除，防止 generate_no_stream_response 返回图像 API 格式
+
             except Exception as e:
                 from ..log_config import logger
                 logger.error(f"[Gemini] Error processing image in non-stream: {e}")
@@ -797,6 +820,12 @@ async def fetch_gemini_response_stream(client, url, headers, payload, model, tim
         
         async for chunk in response.aiter_text():
             buffer += chunk
+            
+            # 防护：如果在处理超大块（比如包含几 MB 的 base64），主动出让控制权
+            # 避免 buffer 拼接操作独占 CPU 导致其它请求卡死
+            if len(buffer) > 50000:
+                await asyncio.sleep(0)
+                
             if buffer and "\n" not in buffer:
                 buffer += "\n"
 
@@ -822,9 +851,10 @@ async def fetch_gemini_response_stream(client, url, headers, payload, model, tim
                 # 调试日志：记录每个 chunk 的关键信息
                 from ..log_config import logger
                 if image_base64:
-                    logger.info(f"[Gemini] image_base64 received, length={len(image_base64)}, finishReason={finishReason}")
+                    # 注意：避免在此处直接打印或使用 image_base64，它可能是一个极大的字符串
+                    logger.info(f"[Gemini] image_base64 received, length={len(image_base64)}, finish={finishReason}")
                 if finishReason:
-                    logger.info(f"[Gemini] finishReason={finishReason}, has_image={bool(image_base64)}, content_len={len(content) if content else 0}")
+                    logger.info(f"[Gemini] finishReason={finishReason}, has_image={bool(image_base64)}, len={len(content) if content else 0}")
 
                 # 追踪有效内容
                 if is_thinking and reasoning_content:
@@ -849,28 +879,27 @@ async def fetch_gemini_response_stream(client, url, headers, payload, model, tim
                     else:
                         image_size_mb = len(image_base64) * 3 / 4 / (1024 * 1024)
                         logger.info(f"[Gemini] Processing image, size={image_size_mb:.2f} MB")
-                        
                         # 发送 SSE 注释作为 keepalive，防止客户端超时断开
-                        # SSE 规范：以冒号开头的行是注释，客户端会忽略但能保持连接
-                        yield ": uploading image\n\n"
-                            
-                        # 上传到图床（不压缩，保持原图质量）
-                        image_url = await upload_image_to_0x0st("data:image/png;base64," + image_base64, max_size_mb=50.0)
-                        
-                        # 检查上传是否成功
-                        if image_url and image_url.startswith("http"):
-                            logger.info(f"[Gemini] Image uploaded successfully: {image_url}")
-                            sse_string = await generate_sse_response(timestamp, model, content=f"\n\n![image]({image_url})", thought_signature=thought_signature)
-                            yield sse_string
-                        else:
-                            # 上传失败，返回 data URI 格式的 base64（直接嵌入）
-                            logger.warning(f"[Gemini] Image upload failed, returning inline base64 data URI")
+                        # 这里不再走图床，统一直接以内联 base64 返回
+                        yield ": streaming inline image\n\n"
+
+                        logger.info("[Gemini] Returning inline base64 image via chunked stream")
+                        full_image_md = f"\n\n![image](data:image/png;base64,{image_base64})"
+                        chunk_size = 16384  # 将庞大的 base64 切割成 16KB 的小块流式发送
+                        for i in range(0, len(full_image_md), chunk_size):
+                            chunk_content = full_image_md[i:i+chunk_size]
                             sse_string = await generate_sse_response(
-                                timestamp, model, 
-                                content=f"\n\n![image](data:image/png;base64,{image_base64})", 
-                                thought_signature=thought_signature
+                                timestamp,
+                                model,
+                                content=chunk_content,
+                                thought_signature=thought_signature if i == 0 else None,
                             )
                             yield sse_string
+                            await asyncio.sleep(0.001)  # 每次发送小块后让出 CPU 控制权，保障服务不卡顿
+
+
+                        
+
 
                 if function_call_name:
                     sse_string = await generate_sse_response(timestamp, model, content=None, tools_id="chatcmpl-9inWv0yEtgn873CxMBzHeCeiHctTV", function_call_name=function_call_name, thought_signature=thought_signature)

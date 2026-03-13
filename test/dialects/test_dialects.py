@@ -102,3 +102,47 @@ def test_apply_passthrough_overrides_deep_merge():
     assert new_payload["generationConfig"]["topP"] == 0.9
     assert new_payload["foo"] == 2
     assert new_payload["bar"] == 3
+
+
+def test_gemini_parse_file_data():
+    native = {
+        "contents": [
+            {"role": "user", "parts": [
+                {"text": "Describe this pdf"},
+                {"fileData": {"mimeType": "application/pdf", "fileUri": "https://example.com/a.pdf"}}
+            ]}
+        ]
+    }
+    canonical = run(parse_gemini_request(native, {"model": "gemini-1.5-flash"}, {}))
+    assert canonical.messages[0].role == "user"
+    assert isinstance(canonical.messages[0].content, list)
+    assert canonical.messages[0].content[0].text == "Describe this pdf"
+    assert canonical.messages[0].content[1].type == "file"
+    assert canonical.messages[0].content[1].file.mime_type == "application/pdf"
+    assert canonical.messages[0].content[1].file.file_uri == "https://example.com/a.pdf"
+
+
+def test_openai_responses_parse_input_file():
+    from core.dialects.openai_responses import parse_openai_responses_request
+    native = {
+        "model": "gpt-4o-realtime",
+        "instructions": "SYS",
+        "input_items": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "analysis"},
+                    {"type": "input_file", "file_id": "file-123", "filename": "data.csv"}
+                ]
+            }
+        ]
+    }
+    canonical = run(parse_openai_responses_request(native, {}, {}))
+    assert canonical.messages[0].role == "system"
+    assert canonical.messages[1].role == "user"
+    content = canonical.messages[1].content
+    assert content[0].text == "analysis"
+    assert content[1].type == "file"
+    assert content[1].file.file_id == "file-123"
+    assert content[1].file.filename == "data.csv"

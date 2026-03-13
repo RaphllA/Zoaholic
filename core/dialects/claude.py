@@ -36,6 +36,17 @@ def _claude_blocks_to_content_items(blocks: List[Dict[str, Any]]) -> List[Conten
                         image_url={"url": f"data:{media_type};base64,{data}"},
                     )
                 )
+        elif btype == "document" and isinstance(block.get("source"), dict):
+            source = block["source"]
+            if source.get("type") == "base64":
+                media_type = source.get("media_type", "application/octet-stream")
+                data = source.get("data", "")
+                items.append(
+                    ContentItem(
+                        type="file",
+                        file={"mime_type": media_type, "data": data},
+                    )
+                )
     return items
 
 

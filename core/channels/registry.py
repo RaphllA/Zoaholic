@@ -66,6 +66,8 @@ class ChannelDefinition:
     models_adapter: Optional[ModelsAdapter] = None
     # 透传模式下对 payload 做二次修饰（保持渠道特殊逻辑在渠道文件内）
     passthrough_payload_adapter: Optional[PassthroughPayloadAdapter] = None
+    supports_documents: bool = False
+    supports_audio: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典，用于 API 响应"""
@@ -77,6 +79,8 @@ class ChannelDefinition:
             "description": self.description,
             "has_passthrough_adapter": self.passthrough_adapter is not None,
             "has_models_adapter": self.models_adapter is not None,
+            "supports_documents": self.supports_documents,
+            "supports_audio": self.supports_audio,
         }
 
 
@@ -97,6 +101,8 @@ def register_channel(
     overwrite: bool = False,
     *,
     passthrough_adapter: Optional[RequestAdapter] = None,
+    supports_documents: bool = False,
+    supports_audio: bool = False,
     passthrough_payload_adapter: Optional[PassthroughPayloadAdapter] = None,
 ) -> None:
     """
@@ -129,6 +135,8 @@ def register_channel(
         stream_adapter=stream_adapter,
         response_adapter=response_adapter,
         models_adapter=models_adapter,
+        supports_documents=supports_documents,
+        supports_audio=supports_audio,
     )
 
 

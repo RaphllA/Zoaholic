@@ -18,6 +18,7 @@ from core.log_config import logger
 from routes import api_router
 from core.env import env_bool
 from core.utils import parse_rate_limit, ThreadSafeCircularList, ApiKeyRateLimitRegistry
+from core.block_watchdog import EventLoopBlockWatchdog
 from core.client_manager import ClientManager
 from core.channel_manager import ChannelManager
 from core.routing import set_debug_mode as set_routing_debug_mode
@@ -342,6 +343,7 @@ async def lifespan(app: FastAPI):
     # 启动定时清理任务
     cleanup_task = None
     logs_cleanup_task = None
+    block_watchdog = None
     if not DISABLE_DATABASE:
         try:
             await create_tables()
@@ -479,6 +481,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to initialize plugin system: %s", e)
 
+    if app and not hasattr(app.state, "block_watchdog"):
+        try:
+            watchdog_settings = safe_get(app.state.config, "preferences", default={}) or {}
+            block_watchdog = EventLoopBlockWatchdog.from_settings(watchdog_settings)
+            await block_watchdog.start()
+            app.state.block_watchdog = block_watchdog
+        except Exception as e:
+            logger.error(f"Failed to start thread dump watchdog: {e}")
+
     # 初始化全局 model_handler
     global model_handler
     if model_handler is None:
@@ -506,6 +517,14 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     
+    if hasattr(app.state, 'block_watchdog'):
+        try:
+            await app.state.block_watchdog.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop thread dump watchdog: {e}")
+        finally:
+            delattr(app.state, 'block_watchdog')
+
     # await app.state.client.aclose()
     if hasattr(app.state, 'client_manager'):
         await app.state.client_manager.close()
@@ -546,6 +565,11 @@ async def get_markdown_docs():
         content=markdown,
         media_type="text/markdown"
     )
+
+@app.get("/-/health")
+async def health_check():
+    """轻量级健康探针，用于进程管理器判断存活状态"""
+    return {"status": "ok", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 # 自定义 RequestValidationError 处理已移除，如需可在单独模块中实现
 

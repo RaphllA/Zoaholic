@@ -19,6 +19,7 @@ interface ApiKeyData {
   preferences?: {
     credits?: number;
     created_at?: string;
+    rate_limit?: string;
     [key: string]: any;
   };
 }
@@ -47,6 +48,7 @@ export default function Admin() {
   const [formGroups, setFormGroups] = useState<string[]>(['default']);
   const [formModels, setFormModels] = useState<string[]>([]);
   const [formCredits, setFormCredits] = useState('');
+  const [formRateLimit, setFormRateLimit] = useState('');
 
   // Input states
   const [groupInput, setGroupInput] = useState('');
@@ -125,6 +127,7 @@ export default function Admin() {
 
       setFormModels(Array.isArray(source.model) ? [...source.model] : []);
       setFormCredits(source.preferences?.credits !== undefined ? String(source.preferences.credits) : '');
+      setFormRateLimit(source.preferences?.rate_limit || '');
     } else {
       setFormApi('');
       setFormName('');
@@ -132,6 +135,7 @@ export default function Admin() {
       setFormGroups(['default']);
       setFormModels([]);
       setFormCredits('');
+      setFormRateLimit('');
     }
 
     setIsSheetOpen(true);
@@ -282,6 +286,9 @@ export default function Admin() {
     if (formCredits.trim()) {
       const num = Number(formCredits);
       if (!isNaN(num)) prefs.credits = num;
+    }
+    if (formRateLimit.trim()) {
+      prefs.rate_limit = formRateLimit.trim();
     }
     if (Object.keys(prefs).length > 0) target.preferences = prefs;
 
@@ -497,6 +504,9 @@ export default function Admin() {
                       {state?.created_at && (
                         <div className="text-xs text-muted-foreground/60 mt-1">创建: {state.created_at}</div>
                       )}
+                      {keyObj.preferences?.rate_limit && (
+                        <div className="text-[10px] text-muted-foreground/50 mt-0.5">限流: {keyObj.preferences.rate_limit}</div>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`px-2 py-1 rounded text-xs font-medium ${keyObj.role === 'admin' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : 'bg-muted text-muted-foreground'}`}>
@@ -627,7 +637,7 @@ export default function Admin() {
               {/* Quota Section */}
               <section className="space-y-4">
                 <div className="text-sm font-semibold text-foreground border-b border-border pb-2 flex items-center gap-2">
-                  <Wallet className="w-4 h-4 text-emerald-500" /> 额度与模型
+                  <Wallet className="w-4 h-4 text-emerald-500" /> 额度与限流
                 </div>
 
                 <div>
@@ -638,6 +648,16 @@ export default function Admin() {
                     className="w-full bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm text-foreground"
                   />
                   <p className="text-xs text-muted-foreground mt-1">与统计模块配合: credits - total_cost = 剩余余额</p>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">限流规则 (Rate Limit)</label>
+                  <input
+                    type="text" value={formRateLimit} onChange={e => setFormRateLimit(e.target.value)}
+                    placeholder="例如: 60/min, 1000/day"
+                    className="w-full bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm font-mono text-foreground"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">控制此 Key 的请求速率，支持多段（如 10/min,1000/day）。留空使用全局默认限流。</p>
                 </div>
               </section>
 
