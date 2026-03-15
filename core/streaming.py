@@ -108,6 +108,78 @@ class LoggingStreamingResponse(Response):
             except Exception as e:
                 logger.error(f"Error updating stats in LoggingStreamingResponse: {str(e)}")
 
+    def _try_extract_usage(self, resp: dict) -> None:
+        """从已解析的 JSON 对象中提取 usage 并合并到 current_info。
+
+        合并策略：仅更新非零值，避免后到的事件覆盖先到的非零值。
+        例如 Claude 流式响应将 input_tokens 和 output_tokens 分散在不同事件中。
+        """
+        from core.dialects.registry import get_dialect
+
+        d_id = self.dialect_id or self.current_info.get("dialect_id") or "openai"
+        dialect = get_dialect(d_id)
+
+        usage_info = None
+        if dialect and dialect.parse_usage:
+            usage_info = dialect.parse_usage(resp)
+
+        # 当前方言未解析出 usage 且不是 openai 时，用 openai 格式保底
+        if not usage_info and d_id != "openai":
+            o_dialect = get_dialect("openai")
+            if o_dialect and o_dialect.parse_usage:
+                usage_info = o_dialect.parse_usage(resp)
+
+        if usage_info:
+            for _usage_key in ("prompt_tokens", "completion_tokens"):
+                new_val = usage_info.get(_usage_key, 0)
+                if new_val > 0:
+                    self.current_info[_usage_key] = new_val
+            # total_tokens 始终重算，确保一致性
+            self.current_info["total_tokens"] = (
+                self.current_info.get("prompt_tokens", 0)
+                + self.current_info.get("completion_tokens", 0)
+            )
+
+    def _try_parse_line(self, line: str, content_start_recorded: bool) -> bool:
+        """尝试解析单行 SSE 数据，提取 usage 和 content_start_time。
+
+        Returns:
+            更新后的 content_start_recorded 标志
+        """
+        line = line.strip()
+
+        # 跳过空行、注释行和 SSE event 类型行
+        if not line or line.startswith(":") or line.startswith("event:"):
+            return content_start_recorded
+
+        if line.startswith("data:"):
+            line = line[5:].strip()
+
+        # 跳过特殊标记和空行
+        if not line or line.startswith("[DONE]") or line.startswith("OK"):
+            return content_start_recorded
+
+        # 尝试解析 JSON —— 同步调用 json.loads 以避免 await（此方法非 async）
+        # 由于外层已在 asyncio 中，这里直接调用；JSON 解析通常足够快
+        try:
+            resp = json.loads(line)
+        except Exception:
+            return content_start_recorded
+
+        # 检测正文开始时间
+        if not content_start_recorded:
+            choices = resp.get("choices")
+            if choices and isinstance(choices, list) and len(choices) > 0:
+                content = safe_get(choices[0], "delta", "content", default=None)
+                if content and content.strip():
+                    self.current_info["content_start_time"] = time() - self.current_info.get("start_time", time())
+                    content_start_recorded = True
+
+        # 提取 usage
+        self._try_extract_usage(resp)
+
+        return content_start_recorded
+
     async def _logging_iterator(self):
         # 用于收集响应体的缓冲区（仅在配置了保留时间时使用）
         # response_chunks 用于收集返回给用户的响应（即经过转换后的）
@@ -116,6 +188,10 @@ class LoggingStreamingResponse(Response):
         total_response_size = 0
         should_save_response = self.current_info.get("raw_data_expires_at") is not None
         content_start_recorded = False  # 标记是否已记录正文开始时间
+        # 跨 chunk 行缓冲：上游 HTTP chunk 边界与 SSE 行边界不一定对齐，
+        # 一个 data: 行可能被拆到相邻两个 chunk 中。
+        # 保留上一个 chunk 末尾的不完整行，拼接到下一个 chunk 开头。
+        _line_buffer = ""
         
         async for chunk in self.body_iterator:
             if isinstance(chunk, str):
@@ -136,66 +212,35 @@ class LoggingStreamingResponse(Response):
             if self.debug:
                 logger.info(chunk_text.encode("utf-8").decode("unicode_escape"))
 
-            # 按行分割处理，一个 chunk 可能包含多个 SSE 事件
+            # 拼接上一个 chunk 的残留行
+            chunk_text = _line_buffer + chunk_text
+            _line_buffer = ""
+
+            # 按行分割；最后一个元素可能是不完整行，需要缓冲
             lines = chunk_text.split("\n")
+            # 如果 chunk 不以换行结尾，末尾元素是不完整行，留到下个 chunk
+            if not chunk_text.endswith("\n"):
+                _line_buffer = lines.pop()
+
             for line in lines:
-                line = line.strip()
-                
-                # 跳过空行和注释行
-                if not line or line.startswith(":"):
-                    continue
-
-                if line.startswith("data:"):
-                    line = line[5:].strip()  # 移除 "data:" 前缀（5个字符）
-
-                # 跳过特殊标记和空行
-                if not line or line.startswith("[DONE]") or line.startswith("OK"):
-                    continue
-
-                # 尝试解析 JSON
                 try:
-                    resp = await asyncio.to_thread(json.loads, line)
-                    
-                    # 检测正文开始时间（首个非空 content，不含 reasoning_content）
-                    # 注意：如果是在方言转换后，choices 结构可能已变，这里优先支持 OpenAI 风格探测
-                    if not content_start_recorded:
-                        choices = resp.get("choices")
-                        if choices and isinstance(choices, list) and len(choices) > 0:
-                            content = safe_get(choices[0], "delta", "content", default=None)
-                            if content and content.strip():
-                                self.current_info["content_start_time"] = time() - self.current_info.get("start_time", time())
-                                content_start_recorded = True
-                    
-                    # 使用方言注册的 usage 解析方法
-                    from core.dialects.registry import get_dialect
-                    
-                    # 优先使用显式指定的方言，否则从 current_info 获取，默认 openai
-                    d_id = self.dialect_id or self.current_info.get("dialect_id") or "openai"
-                    dialect = get_dialect(d_id)
-                    
-                    usage_info = None
-                    if dialect and dialect.parse_usage:
-                        usage_info = dialect.parse_usage(resp)
-                    
-                    # 如果当前方言未解析出 usage 且不是 openai，尝试用 openai 格式保底（处理 Canonical 转换后的情况）
-                    if not usage_info and d_id != "openai":
-                        o_dialect = get_dialect("openai")
-                        if o_dialect and o_dialect.parse_usage:
-                            usage_info = o_dialect.parse_usage(resp)
-
-                    if usage_info:
-                        self.current_info["prompt_tokens"] = usage_info.get("prompt_tokens", 0)
-                        self.current_info["completion_tokens"] = usage_info.get("completion_tokens", 0)
-                        self.current_info["total_tokens"] = usage_info.get("total_tokens", 0)
+                    content_start_recorded = self._try_parse_line(line, content_start_recorded)
                 except Exception as e:
-                    # 仅在调试模式下记录解析错误，避免正常运行时的噪音
                     if self.debug:
                         logger.error(f"Error parsing streaming response: {str(e)}, line: {repr(line)}")
-                    # 出错时继续处理下一行
             
             # 透传原始 chunk
             yield chunk
         
+        # 处理 _line_buffer 中的残留数据
+        # 流的最后一个 chunk 可能不以换行结尾，此时最后一行 data 会留在缓冲区中
+        if _line_buffer:
+            try:
+                self._try_parse_line(_line_buffer, content_start_recorded)
+            except Exception as e:
+                if self.debug:
+                    logger.error(f"Error parsing remaining buffer: {str(e)}, line: {repr(_line_buffer)}")
+
         # 保存返回给用户的响应体（使用深度截断，保留结构同时限制大小）
         # 使用 asyncio.to_thread 避免大响应体阻塞事件循环
         if should_save_response and response_chunks:

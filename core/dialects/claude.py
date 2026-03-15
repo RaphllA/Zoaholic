@@ -435,7 +435,15 @@ def parse_claude_usage(data: Any) -> Optional[Dict[str, int]]:
     """从 Claude 格式中提取 usage"""
     if not isinstance(data, dict):
         return None
-    usage = data.get("usage")
+
+    # message_start 事件: usage 嵌套在 message.usage 中
+    msg = data.get("message")
+    if isinstance(msg, dict) and msg.get("usage"):
+        usage = msg["usage"]
+    else:
+        # message_delta 事件及非流式响应: 顶层 usage
+        usage = data.get("usage")
+
     if usage:
         prompt = usage.get("input_tokens", 0)
         completion = usage.get("output_tokens", 0)
