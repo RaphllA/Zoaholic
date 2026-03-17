@@ -68,9 +68,14 @@ Render / Aiven / Railway 等平台通常会提供 `DATABASE_URL`。
 ```bash
 docker run --rm -p 8000:8000 \
   -e PORT=8000 \
+  -e CONFIG_STORAGE=db \
   -e DATABASE_URL="postgresql://user:pass@host:5432/db?sslmode=require" \
   ghcr.io/qianzhuowo/zoaholic:latest
 ```
+
+如果你使用仓库中的 `docker-compose.yml`，默认会将配置保存到数据库（`CONFIG_STORAGE=db`），并把 SQLite 数据库持久化到 `./data/stats.db`。这样可以避免 Docker 单文件挂载 `api.yaml` 带来的写入问题。
+
+如果你坚持使用文件模式，请挂载目录，再通过 `API_YAML_PATH` 指向目录内的文件；不建议直接把单个 `api.yaml` 绑定到容器内的 `/home/api.yaml`。
 
 ### 3）首次初始化
 

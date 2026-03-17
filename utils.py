@@ -59,17 +59,6 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_YAML_PATH = os.path.abspath(os.getenv("API_YAML_PATH") or os.path.join(_BASE_DIR, "api.yaml"))
 yaml_error_message = None
 
-# 防御：Docker volume 挂载时，如果宿主机上目标文件不存在，Docker 会将其创建为空目录。
-# 这会导致后续 open() / os.replace() 失败。在模块加载阶段及早检测并修正。
-if os.path.isdir(API_YAML_PATH):
-    import shutil as _shutil
-    logger.warning(
-        f"API_YAML_PATH '{API_YAML_PATH}' is a directory instead of a file. "
-        f"This typically happens when Docker volume mount target does not exist on the host. "
-        f"Removing the directory so the application can create the config file normally."
-    )
-    _shutil.rmtree(API_YAML_PATH)
-
 
 def _sanitize_config_for_persistence(config_data: dict) -> dict:
     """清理配置中的运行时字段，返回可持久化的 dict。
@@ -266,19 +255,22 @@ def _quote_colon_strings(obj):
         return obj
 
 def save_api_yaml(config_data):
-    """将配置持久化到 api.yaml（原子写入）。
+    """将配置持久化到 api.yaml。
 
-    - 先写入同目录临时文件，再使用 os.replace 原子替换，避免部分写入
-    - 显式 flush + fsync，尽量降低“写入成功但未落盘”的风险
-    - 任何异常都会抛出，调用方应据此返回非 200
+    写入策略：
+    1. 优先原子写入（临时文件 + os.replace），避免写入中断导致文件损坏。
+    2. 若 os.replace 失败（常见于 Docker 单文件挂载，挂载点不可被 rename 替换，
+       报 Errno 16 Device or resource busy），自动回退为直接写入目标文件。
+    3. 若目标路径是目录，则直接报错，并提示用户修正挂载方式。
     """
 
     import copy
+    import errno
     import tempfile
 
     processed_data = copy.deepcopy(config_data)
 
-    # 清理运行时字段（以 _ 开头的字段不应该被保存到配置文件）
+    # 清理运行时字段（以 _ 开头的字段不写入配置文件）
     for provider in processed_data.get('providers', []):
         keys_to_remove = [k for k in list(provider.keys()) if k.startswith('_')]
         for k in keys_to_remove:
@@ -295,6 +287,14 @@ def save_api_yaml(config_data):
     target_dir = os.path.dirname(target_path) or "."
     os.makedirs(target_dir, exist_ok=True)
 
+    if os.path.isdir(target_path):
+        raise RuntimeError(
+            f"Configured api.yaml path '{target_path}' is a directory, not a file. "
+            f"This usually happens when Docker bind-mounts a missing host path as a directory. "
+            f"For Docker, prefer CONFIG_STORAGE=db with a persistent /home/data volume, "
+            f"or mount a directory and set API_YAML_PATH to a file inside it."
+        )
+
     temp_path = None
     try:
         fd, temp_path = tempfile.mkstemp(prefix=".api.yaml.", suffix=".tmp", dir=target_dir)
@@ -303,24 +303,38 @@ def save_api_yaml(config_data):
             f.flush()
             os.fsync(f.fileno())
 
-        # 防御：如果目标路径被意外创建为目录（常见于 Docker 挂载时宿主机文件不存在），
-        # os.replace() 无法用文件替换目录，需要先删除该目录。
-        if os.path.isdir(target_path):
-            import shutil
+        try:
+            os.replace(temp_path, target_path)
+            temp_path = None
+            return
+        except OSError as e:
+            replace_errno = getattr(e, "errno", None)
+            if replace_errno not in {errno.EBUSY, errno.EXDEV, errno.EPERM, errno.EACCES}:
+                raise
+
             logger.warning(
-                f"Target path '{target_path}' is a directory, not a file. "
-                f"This usually happens when Docker volume mount creates it as a directory. "
-                f"Removing the directory and replacing with the config file."
+                f"Atomic replace unavailable for '{target_path}', falling back to direct write. "
+                f"This is common with Docker single-file bind mounts. err={e}"
             )
-            shutil.rmtree(target_path)
-        os.replace(temp_path, target_path)
+
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            temp_path = None
+
+        with open(target_path, "w", encoding="utf-8") as f:
+            yaml.dump(processed_data, f)
+            f.flush()
+            os.fsync(f.fileno())
     except Exception as e:
         if temp_path and os.path.exists(temp_path):
             try:
                 os.unlink(temp_path)
-            except Exception:
+            except OSError:
                 pass
         raise RuntimeError(f"Failed to save api.yaml to '{target_path}': {e}") from e
+
 
 async def update_config(config_data, use_config_url=False, skip_model_fetch=False, save_to_file=True, save_to_db: bool = False):
     for index, provider in enumerate(config_data['providers']):

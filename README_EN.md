@@ -79,6 +79,7 @@ Example with GHCR image (replace with your own image if you build it yourself):
 ```bash
 docker run --rm -p 8000:8000 \
   -e PORT=8000 \
+  -e CONFIG_STORAGE=db \
   -e DATABASE_URL="postgresql://user:pass@host:5432/db?sslmode=require" \
   ghcr.io/qianzhuowo/zoaholic:latest
 ```
@@ -126,6 +127,10 @@ Render usually injects `PORT` automatically; Zoaholic will read `PORT` as the li
 | `SYNC_CONFIG_TO_FILE` | `false` | Whether to write config back to `api.yaml`. Cloud file systems are often ephemeral/readonly, keep `false`. |
 | `JWT_SECRET` | (optional) | JWT signing key for admin console. **You can skip it**: on first `/setup`, Zoaholic auto-generates and persists `admin_user.jwt_secret` in DB and reuses it after restarts. For better security, set it explicitly. |
 | `DISABLE_DATABASE` | `false` | Disable DB entirely. Cloud usually should NOT disable it (otherwise no config persistence / no stats). |
+
+If you use the repository `docker-compose.yml`, it now defaults to `CONFIG_STORAGE=db` and persists the SQLite database at `./data/stats.db`. This avoids the write problems caused by Docker single-file bind mounts for `api.yaml`.
+
+If you still want file-based config, mount a directory and point `API_YAML_PATH` to a file inside that directory. Do not bind a single host `api.yaml` directly to `/home/api.yaml`.
 
 ### Cloudflare D1 (optional)
 
