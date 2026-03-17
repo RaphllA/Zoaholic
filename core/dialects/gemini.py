@@ -9,6 +9,7 @@ Gemini 方言
 """
 
 import json
+import asyncio
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from core.models import RequestModel, Message, ContentItem

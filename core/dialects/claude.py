@@ -9,6 +9,7 @@ Claude 方言
 """
 
 import json
+import asyncio
 from typing import Any, Dict, List, Optional, Union
 
 from core.models import RequestModel, Message, ContentItem

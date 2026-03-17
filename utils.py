@@ -59,6 +59,17 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_YAML_PATH = os.path.abspath(os.getenv("API_YAML_PATH") or os.path.join(_BASE_DIR, "api.yaml"))
 yaml_error_message = None
 
+# 防御：Docker volume 挂载时，如果宿主机上目标文件不存在，Docker 会将其创建为空目录。
+# 这会导致后续 open() / os.replace() 失败。在模块加载阶段及早检测并修正。
+if os.path.isdir(API_YAML_PATH):
+    import shutil as _shutil
+    logger.warning(
+        f"API_YAML_PATH '{API_YAML_PATH}' is a directory instead of a file. "
+        f"This typically happens when Docker volume mount target does not exist on the host. "
+        f"Removing the directory so the application can create the config file normally."
+    )
+    _shutil.rmtree(API_YAML_PATH)
+
 
 def _sanitize_config_for_persistence(config_data: dict) -> dict:
     """清理配置中的运行时字段，返回可持久化的 dict。
@@ -292,6 +303,16 @@ def save_api_yaml(config_data):
             f.flush()
             os.fsync(f.fileno())
 
+        # 防御：如果目标路径被意外创建为目录（常见于 Docker 挂载时宿主机文件不存在），
+        # os.replace() 无法用文件替换目录，需要先删除该目录。
+        if os.path.isdir(target_path):
+            import shutil
+            logger.warning(
+                f"Target path '{target_path}' is a directory, not a file. "
+                f"This usually happens when Docker volume mount creates it as a directory. "
+                f"Removing the directory and replacing with the config file."
+            )
+            shutil.rmtree(target_path)
         os.replace(temp_path, target_path)
     except Exception as e:
         if temp_path and os.path.exists(temp_path):
