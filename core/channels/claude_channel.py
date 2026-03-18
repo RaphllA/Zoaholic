@@ -350,10 +350,12 @@ async def get_claude_payload(request, engine, provider, api_key=None):
                 }
 
     if request.thinking:
-        payload["thinking"] = {
-            "budget_tokens": request.thinking.budget_tokens,
-            "type": request.thinking.type
-        }
+        thinking_config = {}
+        if request.thinking.budget_tokens is not None:
+            thinking_config["budget_tokens"] = request.thinking.budget_tokens
+        if request.thinking.type is not None:
+            thinking_config["type"] = request.thinking.type
+        payload["thinking"] = thinking_config
         payload["temperature"] = 1
         payload.pop("top_p", None)
         payload.pop("top_k", None)
