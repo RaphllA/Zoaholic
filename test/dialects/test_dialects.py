@@ -77,11 +77,17 @@ def test_detect_passthrough_registry_and_fallback():
 
 
 def test_apply_passthrough_system_prompt_openai():
+    """测试透传模式下 OpenAI 渠道的 system_prompt 注入。
+
+    system_prompt 注入由渠道级 passthrough_payload_adapter 负责，
+    不是 apply_passthrough_modifications 的职责。
+    """
+    import asyncio
+    from core.channels.openai_channel import patch_passthrough_openai_payload
+
     payload = {"model": "gpt-4o", "messages": [{"role": "user", "content": "Hi"}]}
-    mods = {"system_prompt": "SYS"}
-    new_payload = apply_passthrough_modifications(
-        payload, mods, "openai", request_model="gpt-4o", original_model="gpt-4o"
-    )
+    mods = {"system_prompt": "SYS", "model_rename": None, "overrides": None}
+    new_payload = asyncio.run(patch_passthrough_openai_payload(payload, mods, None, "openai", {}, None))
     assert new_payload["messages"][0]["role"] == "system"
     assert "SYS" in new_payload["messages"][0]["content"]
 
@@ -123,26 +129,52 @@ def test_gemini_parse_file_data():
 
 
 def test_openai_responses_parse_input_file():
-    from core.dialects.openai_responses import parse_openai_responses_request
+    """测试 Responses API 的 input_file 类型转换为 Canonical 的 file 类型"""
+    from core.dialects.openai_responses import parse_responses_request
     native = {
         "model": "gpt-4o-realtime",
-        "instructions": "SYS",
-        "input_items": [
+        "input": [
+            {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": "SYS"}]
+            },
             {
                 "type": "message",
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": "analysis"},
-                    {"type": "input_file", "file_id": "file-123", "filename": "data.csv"}
+                    {"type": "input_file", "file_id": "file-123", "filename": "data.csv"},
                 ]
-            }
+            },
         ]
     }
-    canonical = run(parse_openai_responses_request(native, {}, {}))
+    canonical = run(parse_responses_request(native, {}, {}))
     assert canonical.messages[0].role == "system"
     assert canonical.messages[1].role == "user"
     content = canonical.messages[1].content
+    assert content[0].type == "text"
     assert content[0].text == "analysis"
     assert content[1].type == "file"
     assert content[1].file.file_id == "file-123"
     assert content[1].file.filename == "data.csv"
+
+
+def test_openai_responses_parse_instructions():
+    """测试 Responses API 的顶层 instructions 被映射为首条 system message"""
+    from core.dialects.openai_responses import parse_responses_request
+    native = {
+        "model": "gpt-4o",
+        "instructions": "You are a helpful assistant.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello"}]
+            }
+        ]
+    }
+    canonical = run(parse_responses_request(native, {}, {}))
+    assert canonical.messages[0].role == "system"
+    assert canonical.messages[0].content == "You are a helpful assistant."
+    assert canonical.messages[1].role == "user"

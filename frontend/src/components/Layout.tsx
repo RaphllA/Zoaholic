@@ -1,47 +1,55 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Server, Terminal, Key, Settings as SettingsIcon, LogOut, FileText, Puzzle, Sun, Moon, Laptop, Menu, X } from 'lucide-react';
+import { LayoutDashboard, Server, Terminal, Key, Settings as SettingsIcon, LogOut, FileText, Puzzle, Sun, Moon, Laptop, Menu, X, FolderOpen } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
 import { useThemeStore } from '../store/themeStore';
 
-export default function Layout() {
-  const { logout } = useAuthStore();
-  const { theme, setTheme } = useThemeStore();
-  const location = useLocation();
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+const navItems = [
+  { id: '/', label: '仪表盘', icon: LayoutDashboard },
+  { id: '/channels', label: '渠道配置', icon: Server },
+  { id: '/playground', label: '测试工坊', icon: Terminal },
+  { id: '/plugins', label: '插件管理', icon: Puzzle },
+  { id: '/logs', label: '系统日志', icon: FileText },
+  { id: '/backend-logs', label: '后台日志', icon: Terminal },
+  { id: '/workspace', label: '工作区', icon: FolderOpen },
+  { id: '/admin', label: '密钥管理', icon: Key },
+  { id: '/settings', label: '系统设置', icon: SettingsIcon },
+];
 
-  const navItems = [
-    { id: '/', label: '仪表盘', icon: <LayoutDashboard className="w-5 h-5" /> },
-    { id: '/channels', label: '渠道配置', icon: <Server className="w-5 h-5" /> },
-    { id: '/playground', label: '测试工坊', icon: <Terminal className="w-5 h-5" /> },
-    { id: '/plugins', label: '插件管理', icon: <Puzzle className="w-5 h-5" /> },
-    { id: '/logs', label: '系统日志', icon: <FileText className="w-5 h-5" /> },
-    { id: '/admin', label: '密钥管理', icon: <Key className="w-5 h-5" /> },
-    { id: '/settings', label: '系统设置', icon: <SettingsIcon className="w-5 h-5" /> },
-  ];
-
-  const handleNavClick = () => {
-    setMobileMenuOpen(false);
-  };
-
-  const NavContent = () => (
+function NavContent({
+  pathname,
+  theme,
+  setTheme,
+  logout,
+  onNavClick,
+}: {
+  pathname: string;
+  theme: string;
+  setTheme: (t: 'light' | 'dark' | 'system') => void;
+  logout: () => void;
+  onNavClick: () => void;
+}) {
+  return (
     <>
       <nav className="flex-1 p-4 space-y-1">
-        {navItems.map(item => (
-          <Link
-            key={item.id}
-            to={item.id}
-            onClick={handleNavClick}
-            className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
-              location.pathname === item.id 
-                ? 'bg-primary text-primary-foreground shadow-md' 
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-            }`}
-          >
-            {item.icon}
-            {item.label}
-          </Link>
-        ))}
+        {navItems.map(item => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.id}
+              to={item.id}
+              onClick={onNavClick}
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
+                pathname === item.id
+                  ? 'bg-primary text-primary-foreground shadow-md'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+              }`}
+            >
+              <Icon className="w-5 h-5" />
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
 
       <div className="p-4 border-t border-border space-y-1">
@@ -58,7 +66,7 @@ export default function Layout() {
           </button>
         </div>
 
-        <button 
+        <button
           onClick={logout}
           className="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-red-600 dark:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 w-full transition-colors"
         >
@@ -68,6 +76,27 @@ export default function Layout() {
       </div>
     </>
   );
+}
+
+export default function Layout() {
+  const { logout } = useAuthStore();
+  const { theme, setTheme } = useThemeStore();
+  const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  const handleNavClick = () => {
+    setMobileMenuOpen(false);
+  };
+
+  const navProps = {
+    pathname: location.pathname,
+    theme,
+    setTheme,
+    logout,
+    onNavClick: handleNavClick,
+  };
+
+  const currentLabel = navItems.find(item => item.id === location.pathname)?.label || 'Zoaholic';
 
   return (
     <div className="flex h-screen bg-background text-foreground font-sans transition-colors duration-300">
@@ -79,12 +108,12 @@ export default function Layout() {
             <span className="font-bold text-lg tracking-tight">Zoaholic</span>
           </div>
         </div>
-        <NavContent />
+        <NavContent {...navProps} />
       </aside>
 
       {/* Mobile Menu Overlay */}
       {mobileMenuOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black/50 z-40 md:hidden"
           onClick={() => setMobileMenuOpen(false)}
         />
@@ -106,7 +135,7 @@ export default function Layout() {
             <X className="w-5 h-5" />
           </button>
         </div>
-        <NavContent />
+        <NavContent {...navProps} />
       </aside>
 
       {/* Main Content */}
@@ -119,9 +148,9 @@ export default function Layout() {
           >
             <Menu className="w-5 h-5" />
           </button>
-          
+
           <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
-            {navItems.find(item => item.id === location.pathname)?.label || 'Zoaholic'}
+            {currentLabel}
           </h2>
         </header>
         <main className="flex-1 overflow-auto p-4 md:p-8 bg-muted/20">

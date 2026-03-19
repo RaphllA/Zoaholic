@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuthStore } from '../store/authStore';
+import { apiFetch } from '../lib/api';
 import {
   RefreshCw, Filter, ChevronDown, ChevronRight, FileText,
   Clock, ArrowDownToLine, CheckCircle2, XCircle,
@@ -77,9 +78,7 @@ export default function Logs() {
       if (filterSuccess === 'SUCCESS') queryParams.append('success', 'true');
       if (filterSuccess === 'FAILED') queryParams.append('success', 'false');
 
-      const res = await fetch(`/v1/logs?${queryParams.toString()}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const res = await apiFetch(`/v1/logs?${queryParams.toString()}`);
 
       if (res.ok) {
         const data = await res.json();
@@ -97,6 +96,7 @@ export default function Logs() {
 
   useEffect(() => {
     fetchLogs(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterModel, filterProvider, filterSuccess]);
 
   const loadMore = () => {
@@ -107,6 +107,7 @@ export default function Logs() {
     if (page > 1) {
       fetchLogs();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
   // Toggle accordion
@@ -169,12 +170,12 @@ export default function Logs() {
     }
   };
 
-  const formatJsonBestEffort = (raw: string) => {
+  const formatJsonBestEffort = (raw: string): { formatted: string; isJson: boolean } => {
     const input = String(raw ?? '').trim();
     if (!input) return { formatted: '', isJson: false };
 
     try {
-      let parsed: any = JSON.parse(input);
+      let parsed: unknown = JSON.parse(input);
 
       // 处理“双重序列化”的情况："{...}" / "[...]"
       if (typeof parsed === 'string') {
@@ -182,7 +183,7 @@ export default function Logs() {
         try {
           parsed = JSON.parse(inner);
         } catch {
-          return { formatted: parsed, isJson: false };
+          return { formatted: inner, isJson: false };
         }
       }
 

@@ -204,6 +204,12 @@ async def parse_responses_request(
     # 转换 input -> messages
     messages = convert_responses_input_to_messages(input_data)
 
+    # 处理顶层 instructions -> system message（Responses API 公开语义）
+    instructions = native_body.get("instructions")
+    if instructions and isinstance(instructions, str) and instructions.strip():
+        # 插入到 messages 最前面作为 system 消息
+        messages.insert(0, {"role": "system", "content": instructions.strip()})
+
     # 构建基本请求
     request_data = {
         "model": model,

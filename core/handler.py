@@ -540,6 +540,28 @@ async def process_request_passthrough(
 
     url, adapter_headers, _ = await adapter(request, engine, provider, api_key)
 
+    # ── 透传 URL 路径修正 ──
+    # passthrough_adapter 返回的 URL 对应方言的"主端点"（如 Claude 的 /messages）。
+    # 当入口请求是子路径（如 /v1/messages/count_tokens）时，需要追加路径后缀。
+    #
+    # 后缀从端点的 passthrough_root 显式配置计算，不依赖 adapter URL 的路径结构，
+    # 因此无论 base_url 配成什么样（如 https://proxy.com/anthropic/v1）都能正确工作。
+    if endpoint and passthrough_ctx.dialect_id:
+        from core.dialects.registry import get_dialect as _get_dialect
+        _dialect = _get_dialect(passthrough_ctx.dialect_id)
+        if _dialect:
+            # 查找匹配当前 endpoint 的透传根路径（显式配置，不依赖路由模板字符串）
+            _root = None
+            for _ep in _dialect.endpoints:
+                if _ep.passthrough_root and endpoint.startswith(_ep.passthrough_root):
+                    if _root is None or len(_ep.passthrough_root) > len(_root):
+                        _root = _ep.passthrough_root
+            # 用 passthrough_root 计算后缀：
+            # 例如 root="/v1/messages", endpoint="/v1/messages/count_tokens" → suffix="/count_tokens"
+            if _root and len(endpoint) > len(_root):
+                _suffix = endpoint[len(_root):]  # 如 "/count_tokens"
+                url = url.rstrip("/") + _suffix
+
     headers: Dict[str, Any] = dict(adapter_headers or {})
     apply_custom_headers(headers, _filter_passthrough_headers(passthrough_ctx.original_headers))
     apply_custom_headers(headers, safe_get(provider, "preferences", "headers", default={}))
@@ -761,7 +783,8 @@ class ModelRequestHandler:
         endpoint: Optional[str] = None,
         dialect_id: Optional[str] = None,
         original_payload: Optional[Dict[str, Any]] = None,
-   original_headers: Optional[Dict[str, str]] = None,
+        original_headers: Optional[Dict[str, str]] = None,
+        passthrough_only: bool = False,
     ) -> Response:
         """
         处理模型请求
@@ -946,6 +969,14 @@ class ModelRequestHandler:
                         request_model=request_model_name,
                     )
 
+                # passthrough_only 前置拦截：如果该端点仅支持透传，
+                # 但当前 provider 与入口方言不匹配（透传未启用），
+                # 直接跳过该 provider，不发送任何真实上游请求。
+                if passthrough_only and not (passthrough_ctx and passthrough_ctx.enabled):
+                    error_message = f"Endpoint {endpoint} requires passthrough mode, but provider {provider_name} is not compatible"
+                    status_code = 501
+                    continue
+
                 process_fn = process_request_passthrough if (passthrough_ctx and passthrough_ctx.enabled) else process_request
                 response = await process_fn(
                     request_data, provider, background_tasks, self.app,
@@ -1033,6 +1064,20 @@ class ModelRequestHandler:
                 else:
                     status_code = 500  # Internal Server Error
                     error_message = str(e) or f"Unknown error: {e.__class__.__name__}"
+
+                # ── 渠道级状态码映射 ──
+                # 把上游返回的非标准状态码映射为我们重试逻辑能识别的标准码。
+                # 例如 Cloudflare 529 → 429，使其触发限流退避而不是立即重试。
+                _sc_overrides = safe_get(provider, "preferences", "status_code_overrides", default=None)
+                if _sc_overrides and isinstance(_sc_overrides, dict):
+                    _mapped = _sc_overrides.get(str(status_code)) or _sc_overrides.get(status_code)
+                    if _mapped is not None:
+                        try:
+                            _mapped = int(_mapped)
+                            if 100 <= _mapped <= 599:
+                                status_code = _mapped
+                        except (TypeError, ValueError):
+                            pass
 
                 exclude_error_rate_limit = [
                     "BrokenResourceError",

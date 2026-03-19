@@ -4,6 +4,7 @@ import {
   RefreshCw, Server, ChevronDown, ChevronUp, DollarSign, Search, X
 } from 'lucide-react';
 import { useAuthStore } from '../store/authStore';
+import { apiFetch } from '../lib/api';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, Legend
@@ -178,7 +179,7 @@ export default function Dashboard() {
   const [defaultCompletionPrice, setDefaultCompletionPrice] = useState(1.0);
   const [rowPrices, setRowPrices] = useState<Record<number, RowPrice>>({});
   const [analysisQueried, setAnalysisQueried] = useState(false);
-  const [trendData, setTrendData] = useState<any[]>([]);
+  const [trendData, setTrendData] = useState<Record<string, string | number>[]>([]);
   const [trendModels, setTrendModels] = useState<string[]>([]);
   const [trendLoading, setTrendLoading] = useState(false);
 
@@ -186,9 +187,8 @@ export default function Dashboard() {
     if (!token) return;
     setLoading(true);
     try {
-      const headers = { Authorization: `Bearer ${token}` };
 
-      const statsRes = await fetch(`/v1/stats?hours=${timeRange}`, { headers });
+      const statsRes = await apiFetch(`/v1/stats?hours=${timeRange}`);
       if (statsRes.ok) {
         const data = await statsRes.json();
         setStats(data.stats || data);
@@ -198,10 +198,10 @@ export default function Dashboard() {
       const start = new Date(end.getTime() - timeRange * 60 * 60 * 1000);
       const tokenUrl = `/v1/token_usage?start_datetime=${encodeURIComponent(start.toISOString())}&end_datetime=${encodeURIComponent(end.toISOString())}`;
 
-      const tokenRes = await fetch(tokenUrl, { headers });
+      const tokenRes = await apiFetch(tokenUrl);
       if (tokenRes.ok) {
         const data = await tokenRes.json();
-        const total = data.usage?.reduce((sum: number, item: any) => sum + (item.total_tokens || 0), 0) || 0;
+        const total = data.usage?.reduce((sum: number, item: { total_tokens?: number }) => sum + (item.total_tokens || 0), 0) || 0;
         setTotalTokens(total);
       }
     } catch (err) {
@@ -217,7 +217,6 @@ export default function Dashboard() {
     setAnalysisQueried(true);
     setTrendData([]);
     try {
-      const headers = { Authorization: `Bearer ${token}` };
       const params = new URLSearchParams();
 
       if (analysisStart) {
@@ -236,8 +235,8 @@ export default function Dashboard() {
         params.set('model', analysisModels.join(','));
       }
 
-      const res = await fetch(`/v1/stats/usage_analysis?${params}`, { headers });
-      const trendResPromise = fetch(`/v1/stats/model_trend?${params}`, { headers });
+      const res = await apiFetch(`/v1/stats/usage_analysis?${params}`);
+      const trendResPromise = apiFetch(`/v1/stats/model_trend?${params}`);
 
       if (res.ok) {
         const result = await res.json();
@@ -306,6 +305,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, timeRange]);
 
   const channelStats = stats?.channel_success_rates || [];

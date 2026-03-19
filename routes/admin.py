@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from core.env import env_bool
 from core.utils import parse_rate_limit, ThreadSafeCircularList, ApiKeyRateLimitRegistry
 from utils import update_config, API_YAML_PATH, yaml, dump_config_to_json_obj
+from core.log_config import apply_backend_log_preferences
 from routes.deps import rate_limit_dependency, verify_admin_api_key, get_app
 
 router = APIRouter()
@@ -127,6 +128,8 @@ async def api_config_update(
             _rebuild_runtime_rate_limits(app)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid rate_limit configuration: {e}") from e
+        apply_backend_log_preferences((app.state.config or {}).get("preferences") or {})
+
     except Exception as e:
         # 不允许“假成功”：只要持久化过程有异常，直接返回非 200
         raise HTTPException(status_code=500, detail=f"Failed to update/persist config: {e}") from e

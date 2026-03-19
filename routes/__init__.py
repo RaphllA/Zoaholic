@@ -20,6 +20,8 @@ from routes.stats import router as stats_router
 from routes.plugins import router as plugins_router
 from routes.setup import router as setup_router
 from routes.auth import router as auth_router
+from routes.health import router as health_router
+from routes.workspace import router as workspace_router
 
 # 导入方言路由（自动注册所有方言端点）
 from core.dialects import dialect_router
@@ -39,5 +41,9 @@ api_router.include_router(auth_router, tags=["Auth"])
 
 # 注册方言路由（OpenAI / Gemini / Claude 等格式端点）
 api_router.include_router(dialect_router)
+
+# 健康检查端点（/healthz, /readyz）不走 /v1 前缀，不需要认证
+api_router.include_router(health_router, tags=["Health"])
+api_router.include_router(workspace_router, tags=["Workspace"])
 
 __all__ = ["api_router"]

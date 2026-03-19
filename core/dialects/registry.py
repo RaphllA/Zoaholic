@@ -61,6 +61,11 @@ class EndpointDefinition:
         handler: 自定义处理函数（可选，不提供则使用通用处理函数）
         summary: 端点摘要（用于 OpenAPI 文档）
         description: 端点描述（用于 OpenAPI 文档）
+        passthrough_only: 是否仅支持透传模式。设为 True 时，该端点只在入口方言与
+            上游引擎格式匹配时可用（走透传路径），不支持跨格式转换。
+            典型用例：/v1/messages/count_tokens 等辅助 API，仅在上游也是 Claude 时有意义。
+        passthrough_root: 透传根路径（显式配置）。用于子路径透传时计算上游 URL 后缀。
+            例如 passthrough_root="/v1/messages" + 请求路径 "/v1/messages/count_tokens" → 后缀 "/count_tokens"。
     """
 
     path: str
@@ -70,6 +75,8 @@ class EndpointDefinition:
     handler: Optional[EndpointHandler] = None
     summary: Optional[str] = None
     description: Optional[str] = None
+    passthrough_only: bool = False
+    passthrough_root: Optional[str] = None
 
     @property
     def full_path(self) -> str:

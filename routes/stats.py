@@ -67,6 +67,9 @@ class ChannelKeyRanking(BaseModel):
     success_count: int
     total_requests: int
     success_rate: float
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
 
 
 class ChannelKeyRankingsResponse(BaseModel):
@@ -761,9 +764,8 @@ async def get_model_trend(
                 for row in result.fetchall()
             ]
 
-    # 后处理：为了方便前端绘图，将数据转换为按时间点对齐的格式
-    # [{'hour': '...', 'model1': count, 'model2': count, ...}, ...]
     chart_dict = {}
+    tokens_chart_dict = {}
     models_seen = set()
     for item in data:
         h = item['hour']
@@ -771,15 +773,17 @@ async def get_model_trend(
         models_seen.add(m)
         if h not in chart_dict:
             chart_dict[h] = {"hour": h}
-        # 这里默认展示请求次数，如果想展示 token 可以改名或增加字段
+        if h not in tokens_chart_dict:
+            tokens_chart_dict[h] = {"hour": h}
         chart_dict[h][m] = item['count']
-        # 可选：增加 tokens 维度
-        # chart_dict[h][f"{m}_tokens"] = item['tokens']
+        tokens_chart_dict[h][m] = item.get('tokens', 0) or 0
 
     chart_data = sorted(chart_dict.values(), key=lambda x: x['hour'])
-    
+    tokens_chart_data = sorted(tokens_chart_dict.values(), key=lambda x: x['hour'])
+
     return JSONResponse(content={
         "data": chart_data,
+        "tokens_data": tokens_chart_data,
         "models": sorted(list(models_seen)),
         "start_datetime": start_dt.isoformat(),
         "end_datetime": end_dt.isoformat(),
@@ -1521,3 +1525,73 @@ async def get_logs(
         page_size=page_size,
         total_pages=total_pages,
     )
+
+
+# ==================== 后台日志 & 出站请求日志 ====================
+
+
+@router.get("/v1/backend_logs", dependencies=[Depends(rate_limit_dependency)])
+async def get_backend_logs(
+    request: Request,
+    since_id: Optional[int] = Query(None, description="Only return entries with id > since_id"),
+    limit: int = Query(200, ge=1, le=2000, description="Max entries to return"),
+    search: Optional[str] = Query(None, description="Search keyword (case-insensitive)"),
+    stream: Optional[str] = Query(None, description="Filter by stream: stdout or stderr"),
+    level: Optional[str] = Query(None, description="Filter by exact log level: DEBUG/INFO/WARNING/ERROR/CRITICAL"),
+    level_group: Optional[str] = Query(None, description="Filter by level group: errors (ERROR+CRITICAL)"),
+    logger_name: Optional[str] = Query(None, description="Filter by logger name (exact, case-insensitive)"),
+    token: str = Depends(verify_admin_api_key),
+):
+    """
+    获取后台进程日志（stdout/stderr 内存缓冲区）。
+    仅管理员可访问，不依赖数据库。
+    """
+    from core.log_config import get_backend_log_entries
+
+    result = get_backend_log_entries(
+        since_id=since_id,
+        limit=limit,
+        search=search,
+        stream=stream,
+        level=level,
+        level_group=level_group,
+        logger_name=logger_name,
+    )
+
+    # 将 datetime 对象转为 ISO 字符串
+    for item in result.get("items", []):
+        if hasattr(item.get("captured_at"), "isoformat"):
+            item["captured_at"] = item["captured_at"].isoformat()
+
+    return JSONResponse(content=result)
+
+
+@router.get("/v1/outbound_logs", dependencies=[Depends(rate_limit_dependency)])
+async def get_outbound_logs(
+    request: Request,
+    since_id: Optional[int] = Query(None, description="Only return entries with id > since_id"),
+    limit: int = Query(200, ge=1, le=2000, description="Max entries to return"),
+    host: Optional[str] = Query(None, description="Filter by target host (fuzzy)"),
+    method: Optional[str] = Query(None, description="Filter by HTTP method: GET/POST/..."),
+    status_min: Optional[int] = Query(None, description="Min status code (inclusive)"),
+    status_max: Optional[int] = Query(None, description="Max status code (inclusive)"),
+    search: Optional[str] = Query(None, description="Search keyword in URL (case-insensitive)"),
+    token: str = Depends(verify_admin_api_key),
+):
+    """
+    获取后端出站 HTTP 请求日志（内存缓冲区）。
+    记录所有通过 httpx.AsyncClient 发出的请求。
+    仅管理员可访问，不依赖数据库。
+    """
+    from core.http import get_outbound_log_entries
+
+    result = get_outbound_log_entries(
+        since_id=since_id,
+        limit=limit,
+        host=host,
+        method=method,
+        status_min=status_min,
+        status_max=status_max,
+        search=search,
+    )
+    return JSONResponse(content=result)

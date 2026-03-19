@@ -1,17 +1,19 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useEffect, useState, KeyboardEvent, ClipboardEvent } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { apiFetch } from '../lib/api';
 import {
   Plus, Edit, Brain, Trash2, ArrowRight, RefreshCw,
   Server, X, CheckCircle2, Settings2, Copy, ToggleRight, ToggleLeft,
-  Folder, MemoryStick, Puzzle, Network, CopyCheck, Power, Files, Play,
-  Search, Check
+  Folder, Puzzle, Network, CopyCheck, Power, Files, Play,
+  Search, Check, BarChart3
 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Switch from '@radix-ui/react-switch';
 import { InterceptorSheet } from '../components/InterceptorSheet';
 import { ChannelTestDialog } from '../components/ChannelTestDialog';
 import { ApiKeyTestDialog } from '../components/ApiKeyTestDialog';
+import { ChannelAnalyticsSheet } from '../components/ChannelAnalyticsSheet';
 
 // ========== Types ==========
 interface ApiKeyObj {
@@ -89,7 +91,10 @@ export default function Channels() {
   const [keyTestDialogOpen, setKeyTestDialogOpen] = useState(false);
   const [keyTestInitialIndex, setKeyTestInitialIndex] = useState<number | null>(null);
   const [overridesJson, setOverridesJson] = useState('');
+  const [statusCodeOverridesJson, setStatusCodeOverridesJson] = useState('');
   const [modelDisplayKey, setModelDisplayKey] = useState(0);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [analyticsProvider, setAnalyticsProvider] = useState('');
 
   const [isFetchModelsOpen, setIsFetchModelsOpen] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
@@ -135,6 +140,7 @@ export default function Channels() {
 
   useEffect(() => {
     fetchInitialData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const openModal = (provider: any = null, index: number | null = null) => {
@@ -186,6 +192,9 @@ export default function Channels() {
       setHeaderEntries(entries);
       setOverridesJson(Object.keys(pOverrides).length > 0 ? JSON.stringify(pOverrides, null, 2) : '');
 
+      const pStatusCodeOverrides = provider.preferences?.status_code_overrides || {};
+      setStatusCodeOverridesJson(Object.keys(pStatusCodeOverrides).length > 0 ? JSON.stringify(pStatusCodeOverrides, null, 2) : '');
+
       const basePreferences = provider.preferences && typeof provider.preferences === 'object'
         ? provider.preferences
         : {};
@@ -214,6 +223,7 @@ export default function Channels() {
     } else {
       setHeaderEntries([]);
       setOverridesJson('');
+      setStatusCodeOverridesJson('');
       setFormData({
         provider: '',
         engine: channelTypes.length > 0 ? channelTypes[0].id : '',
@@ -479,7 +489,7 @@ export default function Channels() {
       } else {
         alert('删除失败');
       }
-    } catch (err) {
+    } catch {
       alert('网络错误');
     }
   };
@@ -501,7 +511,7 @@ export default function Channels() {
       } else {
         alert('操作失败');
       }
-    } catch (err) {
+    } catch {
       alert('网络错误');
     }
   };
@@ -538,7 +548,7 @@ export default function Channels() {
         // 更新后重新排序
         setProviders(sortByWeight(newProviders));
       }
-    } catch (err) {
+    } catch {
       console.error('Failed to update weight');
     }
   };
@@ -578,6 +588,10 @@ export default function Channels() {
     try {
       if (overridesJson.trim()) overridesObj = JSON.parse(overridesJson);
     } catch { /* ignore */ }
+    let statusCodeOverridesObj: Record<string, number> | undefined = undefined;
+    try {
+      if (statusCodeOverridesJson.trim()) statusCodeOverridesObj = JSON.parse(statusCodeOverridesJson);
+    } catch { /* ignore */ }
 
     return {
       provider: formData.provider,
@@ -592,6 +606,7 @@ export default function Channels() {
         ...formData.preferences,
         headers: headersObj,
         post_body_parameter_overrides: overridesObj,
+        status_code_overrides: statusCodeOverridesObj,
       },
     };
   };
@@ -636,8 +651,16 @@ export default function Channels() {
     let overridesObj;
     try {
       if (overridesJson.trim()) overridesObj = JSON.parse(overridesJson);
-    } catch (e) {
+    } catch {
       alert("高级配置 JSON 格式错误");
+      return;
+    }
+
+    let statusCodeOverridesObj: Record<string, number> | undefined;
+    try {
+      if (statusCodeOverridesJson.trim()) statusCodeOverridesObj = JSON.parse(statusCodeOverridesJson) as Record<string, number>;
+    } catch {
+      alert("错误码映射 JSON 格式错误");
       return;
     }
 
@@ -668,6 +691,7 @@ export default function Channels() {
         ...formData.preferences,
         headers: headersObj,
         post_body_parameter_overrides: overridesObj,
+        status_code_overrides: statusCodeOverridesObj,
       },
     };
 
@@ -689,7 +713,7 @@ export default function Channels() {
       } else {
         alert("保存失败");
       }
-    } catch (err) {
+    } catch {
       alert("网络错误");
     }
   };
@@ -745,6 +769,9 @@ export default function Channels() {
             />
           </div>
           <div className="flex items-center gap-0.5 flex-shrink-0">
+            <button onClick={() => { setAnalyticsProvider(p.provider); setAnalyticsOpen(true); }} className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors" title="分析">
+              <BarChart3 className="w-4 h-4" />
+            </button>
             <button onClick={() => openTestDialog(p)} className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded-md transition-colors" title="测试">
               <Play className="w-4 h-4" />
             </button>
@@ -857,6 +884,9 @@ export default function Channels() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => { setAnalyticsProvider(p.provider); setAnalyticsOpen(true); }} className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors" title="分析">
+                          <BarChart3 className="w-4 h-4" />
+                        </button>
                         <button onClick={() => openTestDialog(p)} className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded-md transition-colors" title="测试">
                           <Play className="w-4 h-4" />
                         </button>
@@ -1092,6 +1122,18 @@ export default function Channels() {
                         {SCHEDULE_ALGORITHMS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
                       </select>
                     </div>
+                    <div className="col-span-1 sm:col-span-2">
+                      <label className="text-sm font-medium text-foreground mb-1.5 block">错误码映射 (JSON)</label>
+                      <textarea
+                        value={statusCodeOverridesJson}
+                        onChange={e => setStatusCodeOverridesJson(e.target.value)}
+                        onBlur={() => formatJsonOnBlur(statusCodeOverridesJson, setStatusCodeOverridesJson, '错误码映射')}
+                        rows={2}
+                        placeholder='{"529": 429, "520": 502}'
+                        className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono focus:border-primary outline-none text-foreground"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">将上游非标准状态码映射为标准码以触发正确的重试策略。例如 529→429 使其按限流退避处理。</p>
+                    </div>
                   </div>
                 </section>
 
@@ -1315,6 +1357,12 @@ export default function Channels() {
         open={testDialogOpen}
         onOpenChange={setTestDialogOpen}
         provider={testingProvider}
+      />
+
+      <ChannelAnalyticsSheet
+        open={analyticsOpen}
+        onOpenChange={setAnalyticsOpen}
+        providerName={analyticsProvider}
       />
     </div>
   );

@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from core.log_config import logger
 from routes import api_router
 from core.env import env_bool
+from core.log_config import apply_backend_log_preferences
+from core.watchdog import EventLoopBlockWatchdog as LightWatchdog
 from core.utils import parse_rate_limit, ThreadSafeCircularList, ApiKeyRateLimitRegistry
 from core.utils import is_local_api_key
 from core.block_watchdog import EventLoopBlockWatchdog
@@ -340,6 +342,9 @@ async def lifespan(app: FastAPI):
     # 设置各模块的调试模式
     set_routing_debug_mode(is_debug)
     set_handler_debug_mode(is_debug)
+    app.state.version = VERSION
+    app.state.started_at = datetime.now(timezone.utc)
+    app.state.startup_completed = False
     
     # 启动定时清理任务
     cleanup_task = None
@@ -401,6 +406,8 @@ async def lifespan(app: FastAPI):
                     "round_robin"
                 )
         app.state.global_rate_limit = parse_rate_limit(safe_get(app.state.config, "preferences", "rate_limit", default="999999/min"))
+
+        apply_backend_log_preferences((app.state.config or {}).get("preferences") or {})
 
         # 如果没有任何 API key，则标记需要初始化并允许服务启动（用于 /setup 初始化向导）
         if not app.state.api_keys_db or not app.state.api_list:
@@ -491,6 +498,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start thread dump watchdog: {e}")
 
+    # 轻量事件循环监控（用于健康检查快照，与 block_watchdog 互补）
+    if app and not hasattr(app.state, "event_loop_watchdog"):
+        try:
+            light_watchdog = LightWatchdog.from_env()
+            await light_watchdog.start()
+            app.state.event_loop_watchdog = light_watchdog
+        except Exception as e:
+            logger.error(f"Failed to start event loop watchdog: {e}")
+
     # 初始化全局 model_handler
     global model_handler
     if model_handler is None:
@@ -501,6 +517,7 @@ async def lifespan(app: FastAPI):
             default_timeout=DEFAULT_TIMEOUT,
         )
 
+    app.state.startup_completed = True
     yield
     # 关闭时的代码
     # 取消清理任务
@@ -518,6 +535,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     
+    app.state.startup_completed = False
     if hasattr(app.state, 'block_watchdog'):
         try:
             await app.state.block_watchdog.stop()
@@ -525,6 +543,14 @@ async def lifespan(app: FastAPI):
             logger.error(f"Failed to stop thread dump watchdog: {e}")
         finally:
             delattr(app.state, 'block_watchdog')
+
+    if hasattr(app.state, 'event_loop_watchdog'):
+        try:
+            await app.state.event_loop_watchdog.stop()
+        except Exception as e:
+            logger.error(f"Failed to stop event loop watchdog: {e}")
+        finally:
+            delattr(app.state, 'event_loop_watchdog')
 
     # await app.state.client.aclose()
     if hasattr(app.state, 'client_manager'):

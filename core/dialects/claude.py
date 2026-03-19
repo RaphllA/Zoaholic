@@ -475,6 +475,16 @@ def register() -> None:
                     summary="Create Message",
                     description="Claude 原生格式消息生成接口",
                 ),
+                # POST /v1/messages/* - Claude 同协议子端点透传入口
+                EndpointDefinition(
+                    path="/v1/messages/{subpath:path}",
+                    passthrough_root="/v1/messages",
+                    methods=["POST"],
+                    tags=["Claude Dialect"],
+                    summary="Claude Messages Passthrough Subpaths",
+                    description="Claude /v1/messages 下的子端点透传入口（仅在上游为 Claude 时可用）",
+                    passthrough_only=True,
+                ),
             ],
         )
     )

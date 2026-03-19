@@ -13,7 +13,7 @@ from ruamel.yaml import YAML, YAMLError
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, func, case
-from db import async_session_scope, ChannelStat, AppConfig, DISABLE_DATABASE, DB_TYPE, d1_client
+from db import async_session_scope, ChannelStat, RequestStat, AppConfig, DISABLE_DATABASE, DB_TYPE, d1_client
 from core.env import env_bool
 
 from core.log_config import logger
@@ -1379,8 +1379,43 @@ async def _query_channel_key_stats_d1(
                 "success_count": success_count,
                 "total_requests": total_requests,
                 "success_rate": (success_count / total_requests) if total_requests > 0 else 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_tokens": 0,
             }
         )
+
+    # 查询每个 Key 的 Token 用量（通过 request_id 关联 request_stats）
+    token_sql = (
+        "SELECT cs.provider_api_key, "
+        "COALESCE(SUM(rs.prompt_tokens), 0) AS total_prompt_tokens, "
+        "COALESCE(SUM(rs.completion_tokens), 0) AS total_completion_tokens, "
+        "COALESCE(SUM(rs.total_tokens), 0) AS total_tokens "
+        "FROM channel_stats cs "
+        "LEFT JOIN request_stats rs ON cs.request_id = rs.request_id "
+        "WHERE cs.provider = ? AND cs.timestamp >= ? "
+        "AND cs.provider_api_key IS NOT NULL AND cs.success = 1"
+    )
+    token_params = [provider_name, start_dt]
+    if end_dt:
+        token_sql += " AND cs.timestamp < ?"
+        token_params.append(end_dt)
+    token_sql += " GROUP BY cs.provider_api_key"
+
+    token_rows = await d1_client.query_all(token_sql, token_params)
+    token_map: Dict[str, Dict] = {}
+    for row in token_rows:
+        token_map[row.get("provider_api_key")] = {
+            "total_prompt_tokens": int(row.get("total_prompt_tokens") or 0),
+            "total_completion_tokens": int(row.get("total_completion_tokens") or 0),
+            "total_tokens": int(row.get("total_tokens") or 0),
+        }
+
+    for stat in key_stats:
+        t = token_map.get(stat["api_key"])
+        if t:
+            stat.update(t)
+
     return key_stats
 
 async def query_channel_key_stats(
@@ -1419,19 +1454,51 @@ async def query_channel_key_stats(
         query = query.group_by(ChannelStat.provider_api_key)
         result = await session.execute(query)
         stats_from_db = result.mappings().all()
+
+        # 查询每个 Key 的 Token 用量（通过 request_id 关联 request_stats）
+        token_query = (
+            select(
+                ChannelStat.provider_api_key,
+                func.coalesce(func.sum(RequestStat.prompt_tokens), 0).label("total_prompt_tokens"),
+                func.coalesce(func.sum(RequestStat.completion_tokens), 0).label("total_completion_tokens"),
+                func.coalesce(func.sum(RequestStat.total_tokens), 0).label("total_tokens"),
+            )
+            .join(RequestStat, ChannelStat.request_id == RequestStat.request_id)
+            .where(ChannelStat.provider == provider_name)
+            .where(ChannelStat.timestamp >= start_dt)
+            .where(ChannelStat.provider_api_key.isnot(None))
+            .where(ChannelStat.success == True)
+        )
+        if end_dt:
+            token_query = token_query.where(ChannelStat.timestamp < end_dt)
+        token_query = token_query.group_by(ChannelStat.provider_api_key)
+        token_result = await session.execute(token_query)
+        token_map = {
+            row.provider_api_key: {
+                "total_prompt_tokens": int(row.total_prompt_tokens or 0),
+                "total_completion_tokens": int(row.total_completion_tokens or 0),
+                "total_tokens": int(row.total_tokens or 0),
+            }
+            for row in token_result.fetchall()
+        }
+
     key_stats = []
     for row in stats_from_db:
+        api_key = row.provider_api_key
+        t = token_map.get(api_key, {})
         key_stats.append(
             {
-                "api_key": row.provider_api_key,
+                "api_key": api_key,
                 "success_count": row.success_count,
                 "total_requests": row.total_requests,
                 "success_rate": row.success_count / row.total_requests
                 if row.total_requests > 0
                 else 0,
+                "total_prompt_tokens": t.get("total_prompt_tokens", 0),
+                "total_completion_tokens": t.get("total_completion_tokens", 0),
+                "total_tokens": t.get("total_tokens", 0),
             }
         )
-    # Sort the results by success rate and total requests
     sorted_stats = sorted(
         key_stats,
         key=lambda item: (item["success_rate"], item["total_requests"]),
