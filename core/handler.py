@@ -191,7 +191,13 @@ async def process_request(
 
     last_message_role = safe_get(request, "messages", -1, "role", default=None)
     
-    url, headers, payload = await get_payload(request, engine, provider, api_key)
+    # 提前计算代理，以便 get_payload 内部创建的裸 httpx.AsyncClient 也能走代理
+    proxy = safe_get(app.state.config, "preferences", "proxy", default=None)  # global proxy
+    proxy = safe_get(provider, "preferences", "proxy", default=proxy)  # provider proxy
+
+    from core.http import proxy_context
+    with proxy_context(proxy):
+        url, headers, payload = await get_payload(request, engine, provider, api_key)
     apply_custom_headers(headers, safe_get(provider, "preferences", "headers", default={}))  # add custom headers
     
 
@@ -538,7 +544,13 @@ async def process_request_passthrough(
     if not adapter:
         raise ValueError(f"Unknown engine: {engine}")
 
-    url, adapter_headers, _ = await adapter(request, engine, provider, api_key)
+    # 提前计算代理，以便 adapter 内部创建的裸 httpx.AsyncClient 也能走代理
+    proxy = safe_get(app.state.config, "preferences", "proxy", default=None)
+    proxy = safe_get(provider, "preferences", "proxy", default=proxy)
+
+    from core.http import proxy_context
+    with proxy_context(proxy):
+        url, adapter_headers, _ = await adapter(request, engine, provider, api_key)
 
     # ── 透传 URL 路径修正 ──
     # passthrough_adapter 返回的 URL 对应方言的"主端点"（如 Claude 的 /messages）。

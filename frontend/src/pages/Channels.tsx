@@ -503,6 +503,7 @@ export default function Channels() {
           engine: formData.engine,
           base_url: formData.base_url,
           api_key: firstKey.key,
+          preferences: formData.preferences,
         }),
       });
 

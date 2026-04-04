@@ -132,7 +132,7 @@ async def fetch_channel_models(
     }
     
     # 获取代理配置
-    proxy = provider_config.get("proxy") or safe_get(app.state.config, "preferences", "proxy")
+    proxy = safe_get(provider_config, "preferences", "proxy") or provider_config.get("proxy") or safe_get(app.state.config, "preferences", "proxy")
     
     # 验证 base_url 格式
     base_url = provider.get("base_url", "")
@@ -142,21 +142,22 @@ async def fetch_channel_models(
         logger.info(f"Auto-prefixed base_url: {provider['base_url']}")
     
     try:
-        async with app.state.client_manager.get_client(provider["base_url"], proxy) as client:
-            # 设置超时，避免请求卡死
-            import asyncio
+        from core.http import proxy_context
+        import asyncio
 
-            # 包装 client，让请求拦截器能作用于 models_adapter 的请求
-            enabled_plugins = safe_get(provider, "preferences", "enabled_plugins", default=None)
-            if enabled_plugins:
-                from core.plugins.interceptors import InterceptedClient
-                client = InterceptedClient(client, engine, provider, enabled_plugins)
+        with proxy_context(proxy):
+            async with app.state.client_manager.get_client(provider["base_url"], proxy) as client:
+                # 包装 client，让请求拦截器能作用于 models_adapter 的请求
+                enabled_plugins = safe_get(provider, "preferences", "enabled_plugins", default=None)
+                if enabled_plugins:
+                    from core.plugins.interceptors import InterceptedClient
+                    client = InterceptedClient(client, engine, provider, enabled_plugins)
 
-            models = await asyncio.wait_for(
-                channel.models_adapter(client, provider),
-                timeout=30.0
-            )
-            return JSONResponse(content={"models": models})
+                models = await asyncio.wait_for(
+                    channel.models_adapter(client, provider),
+                    timeout=30.0
+                )
+                return JSONResponse(content={"models": models})
     except Exception as e:
         # 尽量提取并返回上游的错误信息
         upstream_status = None
@@ -403,7 +404,10 @@ async def test_channel(
 
     try:
         # 使用正式链路的 payload 构建逻辑（包含参数覆写、请求插件）
-        url, headers, payload = await get_payload(test_request, engine, provider, selected_api_key)
+        from core.http import proxy_context
+
+        with proxy_context(proxy):
+            url, headers, payload = await get_payload(test_request, engine, provider, selected_api_key)
 
         # 对齐正式链路：追加渠道自定义 headers
         from utils import apply_custom_headers
