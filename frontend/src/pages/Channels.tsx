@@ -195,6 +195,9 @@ export default function Channels() {
   const [balanceLoading, setBalanceLoading] = useState(false);
   const [focusedKeyIdx, setFocusedKeyIdx] = useState<number | null>(null);
 
+  // ── 全局配置（用于价格提示等）──
+  const [globalModelPrice, setGlobalModelPrice] = useState<Record<string, string>>({});
+
   const [isFetchModelsOpen, setIsFetchModelsOpen] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<string[]>([]);
   const [selectedModels, setSelectedModels] = useState<Set<string>>(() => new Set());
@@ -243,6 +246,8 @@ export default function Channels() {
           return weightB - weightA;
         });
         setProviders(sortedProviders);
+        const globalPrefs = data.preferences || data.api_config?.preferences || {};
+        setGlobalModelPrice(globalPrefs.model_price || {});
       }
       if (typesRes.ok) {
         const data = await typesRes.json();
@@ -901,6 +906,25 @@ export default function Channels() {
         }, {} as Record<string, string | string[]>)
       : undefined;
 
+    // 校验并清理渠道级 model_price：去掉空前缀条目，检查价格值合法性
+    let cleanedModelPrice = formData.preferences.model_price;
+    if (cleanedModelPrice && typeof cleanedModelPrice === 'object') {
+      const validEntries: [string, string][] = [];
+      for (const [prefix, priceStr] of Object.entries(cleanedModelPrice)) {
+        const trimmed = prefix.trim();
+        if (!trimmed) continue;
+        const parts = String(priceStr || '').split(',').map(s => s.trim());
+        const inp = parts[0] || '0';
+        const out = parts[1] || '0';
+        if (isNaN(Number(inp)) || isNaN(Number(out))) {
+          alert(`模型价格「${trimmed}」的价格值无效，请填写数字`);
+          return;
+        }
+        validEntries.push([trimmed, `${inp},${out}`]);
+      }
+      cleanedModelPrice = validEntries.length > 0 ? Object.fromEntries(validEntries) : undefined;
+    }
+
     const targetProvider: any = {
       provider: formData.provider,
       remark: formData.remark || undefined,
@@ -913,6 +937,7 @@ export default function Channels() {
       groups: formData.groups,
       preferences: {
         ...formData.preferences,
+        model_price: cleanedModelPrice,
         headers: headersObj,
         post_body_parameter_overrides: overridesObj,
         status_code_overrides: statusCodeOverridesObj,
@@ -1630,6 +1655,101 @@ export default function Channels() {
                       <Switch.Root checked={formData.preferences.tools} onCheckedChange={val => updatePreference('tools', val)} className="w-11 h-6 bg-muted rounded-full data-[state=checked]:bg-primary">
                         <Switch.Thumb className="block w-5 h-5 bg-white rounded-full transition-transform data-[state=checked]:translate-x-[22px]" />
                       </Switch.Root>
+                    </div>
+
+                    {/* 模型价格（渠道级） */}
+                    <div className="border-t border-border pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                          <Wallet className="w-3.5 h-3.5 text-amber-500" /> 模型价格
+                        </label>
+                        <button
+                          onClick={() => {
+                            const mp = { ...(formData.preferences.model_price || {}) };
+                            const entries = Object.entries(mp);
+                            entries.push(['', '']);
+                            updatePreference('model_price', Object.fromEntries(entries));
+                          }}
+                          className="text-xs text-primary hover:text-primary/80 flex items-center gap-1"
+                        >
+                          <Plus className="w-3 h-3" /> 添加
+                        </button>
+                      </div>
+                      <p className="text-xs text-muted-foreground mb-3">渠道级价格优先于全局配置。未配置的模型回退到全局价格；全局也未配置则不计费。</p>
+                      {Object.keys(formData.preferences.model_price || {}).length > 0 && (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-[1fr_4.5rem_4.5rem_1.5rem] gap-1.5 text-[10px] text-muted-foreground font-medium px-0.5">
+                            <span>模型名 / 前缀</span>
+                            <span className="text-center">输入$/M</span>
+                            <span className="text-center">输出$/M</span>
+                            <span></span>
+                          </div>
+                          {Object.entries(formData.preferences.model_price || {}).map(([prefix, priceStr], idx) => {
+                            const parts = String(priceStr || '').split(',').map(s => s.trim());
+                            const inputPrice = parts[0] || '';
+                            const outputPrice = parts[1] || '';
+                            // 检查全局是否有同名价格
+                            const globalEntry = globalModelPrice[prefix];
+                            return (
+                              <div key={idx}>
+                                <div className="grid grid-cols-[1fr_4.5rem_4.5rem_1.5rem] gap-1.5 items-center">
+                                  <input
+                                    type="text"
+                                    value={prefix}
+                                    onChange={e => {
+                                      const entries = Object.entries(formData.preferences.model_price || {});
+                                      entries[idx] = [e.target.value, entries[idx][1]];
+                                      updatePreference('model_price', Object.fromEntries(entries));
+                                    }}
+                                    placeholder="gpt-4o / default"
+                                    className="bg-background border border-border px-2 py-1 rounded text-xs font-mono text-foreground focus:border-primary outline-none"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={inputPrice}
+                                    onChange={e => {
+                                      const entries = Object.entries(formData.preferences.model_price || {});
+                                      entries[idx] = [prefix, `${e.target.value},${outputPrice}`];
+                                      updatePreference('model_price', Object.fromEntries(entries));
+                                    }}
+                                    placeholder="0.3"
+                                    className="bg-background border border-border px-1.5 py-1 rounded text-xs font-mono text-center text-foreground focus:border-primary outline-none"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={outputPrice}
+                                    onChange={e => {
+                                      const entries = Object.entries(formData.preferences.model_price || {});
+                                      entries[idx] = [prefix, `${inputPrice},${e.target.value}`];
+                                      updatePreference('model_price', Object.fromEntries(entries));
+                                    }}
+                                    placeholder="1.0"
+                                    className="bg-background border border-border px-1.5 py-1 rounded text-xs font-mono text-center text-foreground focus:border-primary outline-none"
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const entries = Object.entries(formData.preferences.model_price || {});
+                                      entries.splice(idx, 1);
+                                      updatePreference('model_price', entries.length > 0 ? Object.fromEntries(entries) : undefined);
+                                    }}
+                                    className="p-0.5 text-muted-foreground hover:text-destructive transition-colors"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                {globalEntry && prefix && (
+                                  <p className="text-[10px] text-amber-500/70 mt-0.5 ml-0.5">覆盖全局: {globalEntry}</p>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {Object.keys(globalModelPrice).length > 0 && Object.keys(formData.preferences.model_price || {}).length === 0 && (
+                        <div className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-2 mt-2">
+                          当前使用全局价格配置（{Object.keys(globalModelPrice).length} 条规则）。点击「添加」可为该渠道单独设定价格。
+                        </div>
+                      )}
                     </div>
 
                     {/* 余额查询配置 */}

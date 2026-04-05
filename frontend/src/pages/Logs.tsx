@@ -22,6 +22,8 @@ interface LogEntry {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  prompt_price?: number;
+  completion_price?: number;
   success: boolean;
   status_code?: number;
   is_flagged: boolean;
@@ -375,6 +377,16 @@ export default function Logs() {
               <span className="text-muted-foreground/50">=</span>
               <span className="text-foreground">{log.total_tokens || 0}</span>
             </div>
+
+            {/* 费用 */}
+            {log.success && (log.prompt_price || log.completion_price) ? (() => {
+              const cost = ((log.prompt_tokens || 0) * (log.prompt_price || 0) + (log.completion_tokens || 0) * (log.completion_price || 0)) / 1_000_000;
+              return cost > 0 ? (
+                <span className="text-amber-600 dark:text-amber-400 font-mono text-xs" title={`输入 $${log.prompt_price}/M · 输出 $${log.completion_price}/M`}>
+                  ${cost >= 0.01 ? cost.toFixed(4) : cost.toFixed(6)}
+                </span>
+              ) : null;
+            })() : null}
 
             {/* 耗时 */}
             <div className="flex items-center gap-1 text-muted-foreground" title={`总耗时: ${log.process_time?.toFixed(2)}s, 首响: ${log.first_response_time?.toFixed(2) || '-'}s`}>

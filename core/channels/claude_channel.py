@@ -305,6 +305,8 @@ async def get_claude_payload(request, engine, provider, api_key=None):
     miss_fields = [
         'model',
        'messages',
+        'tools',
+        'tool_choice',
         'presence_penalty',
         'frequency_penalty',
         'n',
@@ -441,7 +443,11 @@ async def fetch_claude_response(client, url, headers, payload, model, timeout):
     content = "".join(text_parts) if text_parts else None
     reasoning_content = "".join(thinking_parts) if thinking_parts else None
 
-    prompt_tokens = safe_get(response_json, "usage", "input_tokens")
+    prompt_tokens = (
+        (safe_get(response_json, "usage", "input_tokens") or 0)
+        + (safe_get(response_json, "usage", "cache_creation_input_tokens") or 0)
+        + (safe_get(response_json, "usage", "cache_read_input_tokens") or 0)
+    ) or None
     output_tokens = safe_get(response_json, "usage", "output_tokens")
     total_tokens = (prompt_tokens or 0) + (output_tokens or 0)
 
@@ -482,7 +488,14 @@ async def fetch_claude_response_stream(client, url, headers, payload, model, tim
                 if line.startswith("data:") and (line := line.lstrip("data: ")):
                     resp: dict = json_loads(line)
 
-                    input_tokens = input_tokens or safe_get(resp, "message", "usage", "input_tokens", default=0)
+                    if not input_tokens:
+                        msg_usage = safe_get(resp, "message", "usage", default={})
+                        if msg_usage:
+                            input_tokens = (
+                                (msg_usage.get("input_tokens") or 0)
+                                + (msg_usage.get("cache_creation_input_tokens") or 0)
+                                + (msg_usage.get("cache_read_input_tokens") or 0)
+                            )
                     output_tokens = safe_get(resp, "usage", "output_tokens", default=0)
                     if output_tokens:
                         total_tokens = input_tokens + output_tokens
